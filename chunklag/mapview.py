@@ -61,6 +61,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <div id="legend"><span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span></div>
   <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
   <button class="btn" id="reset">适配视图</button>
+  <div id="regionlegend" style="margin-top:6px;font-size:11px;line-height:1.7;"></div>
   <div id="hint">着色按卡顿分(启发式)；红块=最卡 TOP；非真实 mspt。</div>
 </div>
 
@@ -113,6 +114,7 @@ function colorFor(score){
   return [lerp(a[0],b[0],ft), lerp(a[1],b[1],ft), lerp(a[2],b[2],ft)];
 }
 
+const REGION_COLOR={spawn:'rgba(110,220,110,.7)',forced:'rgba(255,200,60,.7)',mod:'rgba(255,140,40,.8)'};
 // ---- 离屏位图（每区块 1 像素） ----
 const off = document.createElement('canvas');
 off.width = mapW; off.height = mapZ;
@@ -216,6 +218,14 @@ function render(){
     // 选中高亮
     if(selected){ ctx.strokeStyle='#fff'; ctx.lineWidth=2;
       ctx.strokeRect(sx(selected.x)-1, sy(selected.z)-1, scale+2, scale+2); }
+    // 常加载区描边（出生点/forceload/mod）
+    if(DATA.regions){
+      for(const rg of DATA.regions){
+        const col=REGION_COLOR[rg.type]||'rgba(200,200,200,.6)';
+        ctx.strokeStyle=col; ctx.lineWidth=Math.max(1,Math.min(scale*0.2,3));
+        for(const pair of rg.chunks){ ctx.strokeRect(sx(pair[0]),sy(pair[1]),scale,scale); }
+      }
+    }
     // TOP 红块
     for(const t of DATA.top){
       if(selected && t.x===selected.x && t.z===selected.z) continue;
@@ -313,6 +323,12 @@ function zoomAround(mx,my,f){
       document.getElementById('total').textContent='已加载区块: '+DATA.total;
     } else {
       document.getElementById('total').textContent='区块数: '+DATA.total;
+    }
+    const rl=document.getElementById('regionlegend');
+    if(DATA.regions && DATA.regions.length){
+      rl.innerHTML=DATA.regions.map(rg=>
+        '<span style="display:inline-block;width:10px;height:10px;background:'+(REGION_COLOR[rg.type]||'#888')+';margin-right:4px"></span>'+rg.label
+      ).join('<br>');
     }
 
 const tl=document.getElementById('toplist');

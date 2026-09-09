@@ -112,11 +112,13 @@ def main(argv=None):
         else:
             player = leveldat.read_player_position(world_dir)
         if player:
-            data = mapdata_mod.build_player_map(res, player, args.simdist, top_n=args.top)
-            print("玩家中心模式: 玩家方块(%d,%d) 区块(%d,%d) 模拟距离%d → 加载区%d×%d"
-                  % (round(player[0]), round(player[2]),
-                     int(player[0] // 16), int(player[2] // 16),
-                     args.simdist, 2 * args.simdist + 1, 2 * args.simdist + 1))
+            from chunklag import loaders
+            regions = loaders.collect_regions(world_dir)
+            data = mapdata_mod.build_union_map(res, player, args.simdist, regions, top_n=args.top)
+            print("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
+                  % (int(player[0] // 16), int(player[2] // 16), args.simdist,
+                     2 * args.simdist + 1, 2 * args.simdist + 1,
+                     ", ".join(r[1] for r in regions) if regions else "无"))
         else:
             data = mapdata_mod.build_map_data(res, top_n=args.top)
         render_html_map(data, args.map, top_n=args.top)

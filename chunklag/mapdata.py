@@ -78,3 +78,35 @@ def build_player_map(result, player_xyz, sim_dist, top_n=20):
     }
     data["total_all"] = len(result.chunk_entries)
     return data
+
+
+def build_union_map(result, player_xyz, sim_dist, regions, top_n=20):
+    """
+    三源并集地图：玩家模拟区 ∪ 常加载区(出生点/forceload/mod)。
+
+    - 玩家模拟区：以玩家区块为中心、边长(2*sim_dist+1)正方形（MC 仿真距离）。
+    - 常加载区：regions 为 [(type,label,区块集合)]（出自 loaders.collect_regions）。
+    只显示并集内区块；regions 用于前端给"常加载区"加彩色边界/标记。
+    """
+    import math
+    px, _py, pz = player_xyz[0], player_xyz[1], player_xyz[2]
+    pcx = int(math.floor(px / 16))
+    pcz = int(math.floor(pz / 16))
+    s = sim_dist
+
+    union = {(pcx + dx, pcz + dz) for dx in range(-s, s + 1)
+             for dz in range(-s, s + 1)}
+    for _t, _l, cs in regions:
+        union |= set(cs)
+
+    entries = {k: v for k, v in result.chunk_entries.items() if k in union}
+    mock = types.SimpleNamespace(chunk_entries=entries)
+    data = build_map_data(mock, top_n=top_n)
+    data["player"] = {
+        "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
+        "sim_dist": s, "load_width": 2 * s + 1,
+    }
+    data["regions"] = [{"type": t, "label": l, "chunks": sorted(cs)}
+                       for t, l, cs in regions]
+    data["total_all"] = len(result.chunk_entries)
+    return data
