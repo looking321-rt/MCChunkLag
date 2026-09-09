@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# 生成物（测试存档 / 输出）
+tests/fake_world/
+tests/out.html
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+*.log
