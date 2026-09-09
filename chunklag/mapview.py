@@ -57,6 +57,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <div id="panel" class="card">
   <h1>MC 区块卡顿热力图</h1>
   <div id="total">区块数: —</div>
+  <div id="pinfo"></div>
   <div id="legend"><span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span></div>
   <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
   <button class="btn" id="reset">适配视图</button>
@@ -221,6 +222,16 @@ function render(){
       ctx.fillStyle='rgba(255,60,60,.5)';
       ctx.fillRect(sx(t.x), sy(t.z), Math.max(scale,3), Math.max(scale,3));
     }
+    // 玩家位置标记
+    if(DATA.player){
+      const ppx=sx(DATA.player.blockX/16), ppy=sy(DATA.player.blockZ/16);
+      ctx.fillStyle='rgba(80,160,255,.35)'; ctx.strokeStyle='rgba(255,255,255,.95)';
+      ctx.lineWidth=2; ctx.beginPath(); ctx.arc(ppx,ppy,10,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(ppx-14,ppy);ctx.lineTo(ppx-4,ppy); ctx.moveTo(ppx+4,ppy);ctx.lineTo(ppx+14,ppy);
+      ctx.moveTo(ppx,ppy-14);ctx.lineTo(ppx,ppy-4); ctx.moveTo(ppx,ppy+4);ctx.lineTo(ppx,ppy+14);
+      ctx.stroke();
+    }
     drawChrome();
   });
 }
@@ -294,7 +305,15 @@ function zoomAround(mx,my,f){
   const wx=(mx-offX)/scale+B.minX, wz=(my-offY)/scale+B.minZ;
   offX=mx-(wx-B.minX)*nx; offY=my-(wz-B.minZ)*nx; scale=nx; render();
 }
-document.getElementById('total').textContent='区块数: '+DATA.total;
+    if(DATA.player){
+      const p=DATA.player;
+      document.getElementById('pinfo').innerHTML =
+        `玩家 方块(${Math.round(p.blockX)}, ${Math.round(p.blockZ)}) · 区块(${p.chunkX},${p.chunkZ})<br>`+
+        `模拟距离 ${p.sim_dist} · 加载区 ${p.load_width}×${p.load_width}区块 · 已加载 ${DATA.total} / 全部 ${DATA.total_all}`;
+      document.getElementById('total').textContent='已加载区块: '+DATA.total;
+    } else {
+      document.getElementById('total').textContent='区块数: '+DATA.total;
+    }
 
 const tl=document.getElementById('toplist');
 DATA.top.forEach((t,i)=>{
@@ -313,9 +332,12 @@ resize(); fit(); renderBar();
 """
 
 
-def render_html_map(result, out_path, top_n=20):
-    """生成 HTML 交互地图到 out_path。"""
-    data = mapdata_mod.build_map_data(result, top_n=top_n)
+def render_html_map(result_or_data, out_path, top_n=20):
+    """生成 HTML 交互地图到 out_path。接受 result 或已构建的数据 dict。"""
+    if isinstance(result_or_data, dict) and "chunks" in result_or_data:
+        data = result_or_data
+    else:
+        data = mapdata_mod.build_map_data(result_or_data, top_n=top_n)
     labels = mapdata_mod.factor_labels()
     html = (_TEMPLATE
             .replace("__DATA__", json.dumps(data, ensure_ascii=False))

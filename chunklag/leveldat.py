@@ -67,3 +67,30 @@ def describe_world(path):
         return "(无 level.dat)", None
     data, dv = parse_level_dat(ldat)
     return get_world_name(data), dv
+
+
+def read_player_position(world_dir):
+    """
+    读取存档里玩家最后位置（level.dat 的 Data.Player.Pos）。
+    返回 (x, y, z, dimension) 或 None。
+    """
+    ldat = os.path.join(world_dir, "level.dat")
+    if not os.path.exists(ldat):
+        return None
+    data, _dv = parse_level_dat(ldat)
+    if not data:
+        return None
+    player = data.get("Player")
+    if not isinstance(player, dict):
+        return None
+    pos = player.get("Pos")
+    if not isinstance(pos, list) or len(pos) < 3:
+        return None
+    dim = player.get("Dimension", "minecraft:overworld")
+    return (pos[0], pos[1], pos[2], dim)
+
+
+def player_chunk(x, z):
+    """世界方块坐标 → 玩家所在区块坐标（负坐标向下取整）。"""
+    import math
+    return (int(math.floor(x / 16)), int(math.floor(z / 16)))

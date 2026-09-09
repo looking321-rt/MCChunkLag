@@ -10,6 +10,8 @@
   "top": [{"x", "z", "s"}],                      # 最卡 TOP 区块
 }
 """
+import types
+
 from .factors import chunk_score
 
 
@@ -50,3 +52,29 @@ def factor_labels():
         for key, label, _w in items:
             labels[key] = label
     return labels
+
+
+def build_player_map(result, player_xyz, sim_dist, top_n=20):
+    """
+    生成『玩家已加载范围』的地图数据。
+
+    MC Java 仿真距离 sim_dist：以玩家区块为中心、边长 (2*sim_dist+1) 的
+    **正方形**区块区域（切比雪夫距离）内才被加载并 tick（真正卡顿来源）。
+    只保留该范围内区块，其余丢弃；并带玩家标注信息。
+    """
+    import math
+    px, _py, pz = player_xyz[0], player_xyz[1], player_xyz[2]
+    pcx = int(math.floor(px / 16))
+    pcz = int(math.floor(pz / 16))
+    s = sim_dist
+
+    entries = {k: v for k, v in result.chunk_entries.items()
+               if abs(k[0] - pcx) <= s and abs(k[1] - pcz) <= s}
+    mock = types.SimpleNamespace(chunk_entries=entries)
+    data = build_map_data(mock, top_n=top_n)
+    data["player"] = {
+        "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
+        "sim_dist": s, "load_width": 2 * s + 1,
+    }
+    data["total_all"] = len(result.chunk_entries)
+    return data

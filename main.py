@@ -71,6 +71,10 @@ def main(argv=None):
                         help="每个维度最多分析多少区块（0=不限，用于快速预览）")
     parser.add_argument("--html", help="输出 HTML 报告的路径")
     parser.add_argument("--map", help="输出 HTML 交互地图的路径")
+    parser.add_argument("--simdist", type=int, default=10,
+                        help="玩家模拟距离(区块)，默认10，决定加载的正方形边长(2s+1)")
+    parser.add_argument("--player", nargs=2, type=float, metavar=("X", "Z"),
+                        help="手动指定玩家方块坐标X Z（默认自动从存档读玩家位置）")
     args = parser.parse_args(argv)
 
     world_dir = args.world
@@ -100,8 +104,22 @@ def main(argv=None):
     # HTML 交互地图（取第一个维度/主世界）
     if args.map:
         from chunklag.mapview import render_html_map
+        from chunklag import mapdata as mapdata_mod
         res = results[0][2]
-        render_html_map(res, args.map, top_n=args.top)
+        player = None
+        if args.player:
+            player = (args.player[0], 0.0, args.player[1], "minecraft:overworld")
+        else:
+            player = leveldat.read_player_position(world_dir)
+        if player:
+            data = mapdata_mod.build_player_map(res, player, args.simdist, top_n=args.top)
+            print("玩家中心模式: 玩家方块(%d,%d) 区块(%d,%d) 模拟距离%d → 加载区%d×%d"
+                  % (round(player[0]), round(player[2]),
+                     int(player[0] // 16), int(player[2] // 16),
+                     args.simdist, 2 * args.simdist + 1, 2 * args.simdist + 1))
+        else:
+            data = mapdata_mod.build_map_data(res, top_n=args.top)
+        render_html_map(data, args.map, top_n=args.top)
         print("已输出 HTML 交互地图: %s" % args.map)
 
     return 0
