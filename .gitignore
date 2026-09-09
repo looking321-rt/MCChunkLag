@@ -9,6 +9,8 @@ venv/
 # 生成物（测试存档 / 输出）
 tests/fake_world/
 tests/out.html
+tests/report_*.txt
+tests/report_*.html
 
 # 编辑器/系统
 .DS_Store
