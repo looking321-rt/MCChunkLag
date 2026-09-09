@@ -60,9 +60,27 @@ def _mod_blocks_to_chunks(blocks):
     return chunks
 
 
-def read_mod_forced(world_dir):
+def _decode_chunk(v):
+    """FTB chunks.dat 的 Chunk long 编码 = (z<<32)+x（低32位=x有符号，高32位=z）。"""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return None
+    low = v & 0xFFFFFFFF
+    x = low if low < 2**31 else low - 2**32
+    return (x, v >> 32)
+
+
+def _expand(chunks, r):
+    """把一组中心区块扩展为周边 r 的方块区域（常加载会带动相邻区块）。"""
+    return {(cx + dx, cz + dz) for cx, cz in chunks
+            for dx in range(-r, r + 1) for dz in range(-r, r + 1)}
+
+
+def read_mod_forced(world_dir, expand=1):
     """
     读取 mod 强制加载区块（FTB chunks.dat 的 ForgeForced）。
+    每个 mod 的常加载来源 = Blocks(方块坐标) + Chunk(long 编码)，再扩展周边 expand。
     返回 [(mod名, 区块集合), ...]。
     """
     path = os.path.join(world_dir, "data", "chunks.dat")
@@ -85,10 +103,16 @@ def read_mod_forced(world_dir):
         mod_forced = entry.get("ModForced") or []
         chunks = set()
         for mf in mod_forced:
-            if isinstance(mf, dict):
-                blocks = mf.get("Blocks")
-                if isinstance(blocks, list):
-                    chunks |= _mod_blocks_to_chunks(blocks)
+            if not isinstance(mf, dict):
+                continue
+            blocks = mf.get("Blocks")
+            if isinstance(blocks, list):
+                chunks |= _mod_blocks_to_chunks(blocks)
+            ck = _decode_chunk(mf.get("Chunk")) if mf.get("Chunk") is not None else None
+            if ck:
+                chunks.add(ck)
+        if expand > 0 and chunks:
+            chunks = _expand(chunks, expand)
         if chunks:
             results.append((mod, chunks))
     return results
