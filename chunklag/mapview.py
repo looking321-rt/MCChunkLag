@@ -126,6 +126,12 @@ for(const c of DATA.chunks){
 function sx(cx){return (cx-B.minX)*scale + offX;}
 function sy(cz){return (cz-B.minZ)*scale + offY;}
 
+// 坐标换算：区块坐标 → 方块坐标（MC 游戏 F3 的 X/Z，1 区块=16 方块）
+function bx(cx){return cx*16;}         // 区块左上角方块坐标
+function bz(cz){return cz*16;}
+function bcx(cx){return cx*16+8;}      // 区块中心方块坐标
+function bcz(cz){return cz*16+8;}
+
 function resize(){
   W=window.innerWidth; H=window.innerHeight; DPR=Math.min(window.devicePixelRatio||1,2);
   canvas.width=W*DPR; canvas.height=H*DPR;
@@ -160,28 +166,28 @@ function drawChrome(){
   const cz1=Math.floor(((H-offY)/scale+B.minZ)/iv)*iv;
   ctx.textBaseline='middle'; ctx.font='12px Segoe UI,Microsoft YaHei';
   ctx.fillStyle='rgba(0,0,0,.55)';
-  // X 轴（顶部）
+  // X 轴（顶部）—— 显示方块坐标（16 的倍数）
   for(let cx=cx0; cx<=cx1; cx+=iv){
     const x=sx(cx); if(x<-40||x>W+40) continue;
-    const txt=String(cx);
+    const txt=String(bx(cx));
     const w=ctx.measureText(txt).width+12;
     ctx.fillRect(x-w/2,4,w,18);
     ctx.fillStyle='#fff'; ctx.fillText(txt,x,13); ctx.fillStyle='rgba(0,0,0,.55)';
   }
-  // Z 轴（左侧）
+  // Z 轴（左侧）—— 显示方块坐标
   for(let cz=cz0; cz<=cz1; cz+=iv){
     const y=sy(cz); if(y<-40||y>H+40) continue;
-    const txt=String(cz);
+    const txt=String(bz(cz));
     const w=ctx.measureText(txt).width+12;
     ctx.fillRect(4,y-9,w,18);
     ctx.fillStyle='#fff'; ctx.fillText(txt,10,y); ctx.fillStyle='rgba(0,0,0,.55)';
   }
-  // 坐标面板
+  // 坐标面板（方块坐标为主，区块坐标括注）
   const ccx=Math.floor((W/2-offX)/scale+B.minX), ccz=Math.floor((H/2-offY)/scale+B.minZ);
-  document.getElementById('ccenter').textContent=`(${ccx}, ${ccz})`;
+  document.getElementById('ccenter').textContent=`方块(${bcx(ccx)}, ${bcz(ccz)}) · 区块(${ccx}, ${ccz})`;
   const x0=Math.floor((0-offX)/scale+B.minX), x1=Math.floor((W-offX)/scale+B.minX);
   const z0=Math.floor((0-offY)/scale+B.minZ), z1=Math.floor((H-offY)/scale+B.minZ);
-  document.getElementById('crange').textContent=`X ${x0}…${x1} · Z ${z0}…${z1}`;
+  document.getElementById('crange').textContent=`方块X ${bx(x0)}…${bx(x1)+15} · Z ${bz(z0)}…${bz(z1)+15}`;
   // 比例尺：1区块=16米
   const mPerPx=16/scale;
   const sdet=document.getElementById('scaletext');
@@ -258,10 +264,10 @@ canvas.addEventListener('mousemove',e=>{
   const cz=Math.floor((e.clientY-offY)/scale+B.minZ);
   const c=chunks.get(cx*100000+cz);
   hover=c? {x:cx,z:cz} : null;
-  document.getElementById('cmouse').textContent=`(${cx}, ${cz})${c? ' 评分 '+c.s : ''}`;
+  document.getElementById('cmouse').textContent=`方块(${bcx(cx)}, ${bcz(cz)})${c? ' · 评分 '+c.s : ''}`;
   const tip=document.getElementById('tooltip');
   if(c){
-    let html=`<b>区块 (${cx}, ${cz})</b> · 评分 <b style="color:#f38ba8">${c.s}</b>`;
+    let html=`<b>方块 (${bcx(cx)}, ${bcz(cz)})</b><br>区块 (${cx}, ${cz}) · 评分 <b style="color:#f38ba8">${c.s}</b>`;
     const keys=Object.keys(c.f);
     html += keys.length? '<br>'+keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`).join(' · ') : '<br>无卡顿因子';
     tip.innerHTML=html; tip.style.display='block';
@@ -275,7 +281,7 @@ function updateDetail(cx,cz){
   const sd=document.getElementById('sdetail');
   if(c){
     const keys=Object.keys(c.f);
-    sd.textContent = '选中 '+cx+','+cz+' · 评分 '+c.s + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):' | 无因子');
+    sd.textContent = '选中 方块('+bcx(cx)+','+bcz(cz)+') · 区块('+cx+','+cz+') · 评分 '+c.s + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):' | 无因子');
   } else sd.textContent='';
 }
 
@@ -293,7 +299,7 @@ document.getElementById('total').textContent='区块数: '+DATA.total;
 const tl=document.getElementById('toplist');
 DATA.top.forEach((t,i)=>{
   const r=document.createElement('div'); r.className='row';
-  r.innerHTML=`<span class="rank">${i+1}.</span>(${t.x}, ${t.z}) 评分 <b>${t.s}</b>`;
+  r.innerHTML=`<span class="rank">${i+1}.</span>方块(${bcx(t.x)}, ${bcz(t.z)}) · 区块(${t.x}, ${t.z}) 评分 <b>${t.s}</b>`;
   r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale; selected=t; render(); updateDetail(t.x,t.z); };
   tl.appendChild(r);
 });
