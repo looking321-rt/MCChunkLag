@@ -102,19 +102,15 @@ for(const c of DATA.chunks) chunks.set(c.x*100000+c.z, c);
 
 function lerp(a,b,t){return Math.round(a+(b-a)*t);}
 function colorFor(score){
-  if(score<=0) return [42,42,50];
-  const q50=Math.max(DATA.q50,1), q90=Math.max(DATA.q90,q50+1);
-  let t;
-  if(score<=q50) t=0.35*score/q50;
-  else if(score<=q90) t=0.35+0.4*(score-q50)/(q90-q50);
-  else t=0.75+0.25*Math.min(1,(score-q90)/Math.max(1,q90*2));
-  const stops=[[70,200,110],[220,220,70],[255,170,40],[230,60,60]];
-  const seg=Math.min(3,Math.floor(t*3)), ft=(t-seg/3)*3;
-  const a=stops[seg], b=stops[Math.min(3,seg+1)];
-  return [lerp(a[0],b[0],ft), lerp(a[1],b[1],ft), lerp(a[2],b[2],ft)];
+  // 固定阈值离散 5 档：灰=0 · 绿<=5 · 黄<=20 · 橘<=60 · 红>60
+  if(score<=0) return [50,50,58];
+  if(score<=5) return [70,200,90];
+  if(score<=20) return [230,220,60];
+  if(score<=60) return [240,150,40];
+  return [230,50,50];
 }
 
-const REGION_COLOR={spawn:'rgba(110,220,110,.7)',forced:'rgba(255,200,60,.7)',mod:'rgba(255,140,40,.8)'};
+const REGION_COLOR={spawn:'rgba(80,230,80,.95)',forced:'rgba(190,120,255,.95)',mod:'rgba(255,145,40,.95)'};
 // ---- 离屏位图（每区块 1 像素） ----
 const off = document.createElement('canvas');
 off.width = mapW; off.height = mapZ;
@@ -218,12 +214,17 @@ function render(){
     // 选中高亮
     if(selected){ ctx.strokeStyle='#fff'; ctx.lineWidth=2;
       ctx.strokeRect(sx(selected.x)-1, sy(selected.z)-1, scale+2, scale+2); }
-    // 常加载区描边（出生点/forceload/mod）
+    // 常加载区：每个来源画一个大外接框（不逐片填充/描边，避免跟卡顿色块混）
     if(DATA.regions){
+      const lw=Math.max(2,Math.min(scale*0.35,6));
       for(const rg of DATA.regions){
-        const col=REGION_COLOR[rg.type]||'rgba(200,200,200,.6)';
-        ctx.strokeStyle=col; ctx.lineWidth=Math.max(1,Math.min(scale*0.2,3));
-        for(const pair of rg.chunks){ ctx.strokeRect(sx(pair[0]),sy(pair[1]),scale,scale); }
+        if(!rg.chunks || !rg.chunks.length) continue;
+        let mnx=1e9,mxx=-1e9,mnz=1e9,mxz=-1e9;
+        for(const p of rg.chunks){ const cx=p[0],cz=p[1];
+          mnx=Math.min(mnx,cx);mxx=Math.max(mxx,cx);mnz=Math.min(mnz,cz);mxz=Math.max(mxz,cz); }
+        const x0=sx(mnx)-lw, y0=sy(mnz)-lw, w=(mxx-mnx+1)*scale+2*lw, h=(mxz-mnz+1)*scale+2*lw;
+        ctx.strokeStyle=REGION_COLOR[rg.type]||'#999'; ctx.lineWidth=lw;
+        ctx.strokeRect(x0,y0,w,h);
       }
     }
     // TOP 红块
@@ -248,10 +249,8 @@ function render(){
 
 function renderBar(){
   const c=document.getElementById('bar').getContext('2d');
-  const g=c.createLinearGradient(0,0,120,0);
-  g.addColorStop(0,'rgb(70,200,110)');g.addColorStop(.5,'rgb(255,170,40)');
-  g.addColorStop(1,'rgb(230,60,60)');
-  c.fillStyle=g;c.fillRect(0,0,120,12);
+  const cols=['rgb(70,200,90)','rgb(230,220,60)','rgb(240,150,40)','rgb(230,50,50)'];
+  for(let i=0;i<4;i++){ c.fillStyle=cols[i]; c.fillRect(i*30,0,30,12); }
 }
 
 canvas.addEventListener('wheel',e=>{
