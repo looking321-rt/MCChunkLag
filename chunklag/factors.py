@@ -141,18 +141,7 @@ def _be_factor(be):
 
 def has_portal(nbt_dict):
     """检测区块是否含下界传送门方块 nether_portal，用于识别传送门常加载区。"""
-    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
-    if not isinstance(level, dict):
-        level = nbt_dict or {}
-    for sec in level.get("sections") or []:
-        if not isinstance(sec, dict):
-            continue
-        for p in sec.get("palette") or []:
-            if isinstance(p, dict):
-                name = str(p.get("Name", "")).lower()
-                if name.endswith("nether_portal"):
-                    return True
-    return False
+    return any(n.endswith("nether_portal") for n in _chunk_block_names(nbt_dict))
 
 
 _REDSTONE_BLOCKS = {
@@ -179,7 +168,12 @@ def _chunk_block_names(nbt_dict):
     for sec in level.get("sections") or []:
         if not isinstance(sec, dict):
             continue
-        for p in sec.get("palette") or []:
+        # 1.18+ 方块 palette 在 section.block_states.palette；旧版/构造在 section.palette
+        bs = sec.get("block_states") if isinstance(sec, dict) else None
+        pal = bs.get("palette") if isinstance(bs, dict) else None
+        if not isinstance(pal, list):
+            pal = sec.get("palette")
+        for p in pal or []:
             if isinstance(p, dict):
                 nm = str(p.get("Name", "")).lower()
                 if nm:
