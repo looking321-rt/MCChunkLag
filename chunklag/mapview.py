@@ -187,14 +187,21 @@ function drawChrome(){
   const x0=Math.floor((0-offX)/scale+B.minX), x1=Math.floor((W-offX)/scale+B.minX);
   const z0=Math.floor((0-offY)/scale+B.minZ), z1=Math.floor((H-offY)/scale+B.minZ);
   document.getElementById('crange').textContent=`方块X ${bx(x0)}…${bx(x1)+15} · Z ${bz(z0)}…${bz(z1)+15}`;
-  // 比例尺：1区块=16米
+  // 比例尺：nice 取值（1区块=16米），随缩放切换 m/cm，条长约 100px
   const mPerPx=16/scale;
+  const inCm = mPerPx < 1;
+  const unitPx = inCm ? mPerPx*100 : mPerPx;   // 每像素的 cm 或 m
+  const targets = inCm ? [5,10,20,50,100,200,500] : [10,20,50,100,200,500,1000,2000,5000];
+  let best=targets[0], bestPx=0, bestDiff=1e9;
+  for(const t of targets){
+    const px=t/unitPx;
+    if(px>=50 && px<=160){ const d=Math.abs(px-100); if(d<bestDiff){bestDiff=d;best=t;bestPx=px;} }
+  }
+  if(bestPx===0){ best=targets[0]; bestPx=Math.max(50,best/unitPx); }
   const sdet=document.getElementById('scaletext');
-  sdet.textContent = mPerPx>=1? `≈${Math.round(mPerPx)}m` : `≈${(mPerPx*100).toFixed(0)}cm`;
+  sdet.textContent = best + (inCm? ' cm':' m');
   const sbar=document.querySelector('#scalebar i');
-  // 比例条宽度示意 100m 对应的 px
-  const px100=100/(16/scale);
-  sbar.style.width=Math.min(100, (px100/ (document.getElementById('scalebar').clientWidth||100))*100)+'%';
+  sbar.style.width=Math.min(100, (bestPx/(document.getElementById('scalebar').clientWidth||100))*100)+'%';
 }
 
 function render(){
