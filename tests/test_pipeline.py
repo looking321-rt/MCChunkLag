@@ -87,6 +87,25 @@ def test_report():
     check("空维度分析不崩", empty == [], str(empty))
 
 
+def test_map():
+    import main as main_mod
+    from chunklag import mapdata, mapview
+    res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+    d = mapdata.build_map_data(res, top_n=5)
+    check("地图 bounds 正确",
+          d["bounds"]["minX"] == 0 and d["bounds"]["maxX"] == 1
+          and d["bounds"]["minZ"] == 0 and d["bounds"]["maxZ"] == 1,
+          str(d["bounds"]))
+    check("地图 total=3", d["total"] == 3, str(d["total"]))
+    check("地图 top 首个=(1,0)",
+          d["top"][0]["x"] == 1 and d["top"][0]["z"] == 0, str(d["top"][0]))
+    out = os.path.join(ROOT, "tests", "map_test.html")
+    mapview.render_html_map(res, out, top_n=5)
+    txt = open(out, encoding="utf-8").read()
+    check("HTML 地图含 canvas", "<canvas" in txt, "")
+    check("HTML 地图含内嵌JSON", "application/json" in txt, "")
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -94,5 +113,6 @@ if __name__ == "__main__":
     test_region()
     test_analysis()
     test_report()
+    test_map()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

@@ -70,6 +70,7 @@ def main(argv=None):
     parser.add_argument("--limit-chunks", type=int, default=0,
                         help="每个维度最多分析多少区块（0=不限，用于快速预览）")
     parser.add_argument("--html", help="输出 HTML 报告的路径")
+    parser.add_argument("--map", help="输出 HTML 交互地图的路径")
     args = parser.parse_args(argv)
 
     world_dir = args.world
@@ -95,6 +96,13 @@ def main(argv=None):
         with open(args.html, "w", encoding="utf-8") as f:
             f.write("\n".join(html_parts))
         print("已输出 HTML: %s" % args.html)
+
+    # HTML 交互地图（取第一个维度/主世界）
+    if args.map:
+        from chunklag.mapview import render_html_map
+        res = results[0][2]
+        render_html_map(res, args.map, top_n=args.top)
+        print("已输出 HTML 交互地图: %s" % args.map)
 
     return 0
 
