@@ -139,6 +139,93 @@ def _be_factor(be):
     return "be_other"
 
 
+def has_portal(nbt_dict):
+    """检测区块是否含下界传送门方块 nether_portal，用于识别传送门常加载区。"""
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    for sec in level.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        for p in sec.get("palette") or []:
+            if isinstance(p, dict):
+                name = str(p.get("Name", "")).lower()
+                if name.endswith("nether_portal"):
+                    return True
+    return False
+
+
+_REDSTONE_BLOCKS = {
+    "minecraft:redstone_wire", "minecraft:repeater", "minecraft:comparator",
+    "minecraft:piston", "minecraft:sticky_piston", "minecraft:observer",
+    "minecraft:redstone_lamp", "minecraft:dropper", "minecraft:dispenser",
+    "minecraft:hopper", "minecraft:note_block", "minecraft:redstone_block",
+    "minecraft:target", "minecraft:detector_rail", "minecraft:powered_rail",
+    "minecraft:daylight_detector",
+}
+_REDSTONE_BE_IDS = {
+    "minecraft:dropper", "minecraft:dispenser", "minecraft:hopper",
+    "minecraft:piston", "minecraft:sticky_piston", "minecraft:observer",
+    "minecraft:command_block", "minecraft:repeater", "minecraft:comparator",
+}
+
+
+def _chunk_block_names(nbt_dict):
+    """收集区块 palette 里所有方块名（归一化）。"""
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    names = set()
+    for sec in level.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        for p in sec.get("palette") or []:
+            if isinstance(p, dict):
+                nm = str(p.get("Name", "")).lower()
+                if nm:
+                    names.add(nm)
+    return names
+
+
+def is_portal_loader(nbt_dict):
+    """
+    疑似传送门常加载器：同一区块同时有 黑曜石(门框) + 红石器件。
+    黑曜石+红石组合比纯 nether_portal 更鲁棒（门方块可能未保存，但黑曜石框架+红石装置在）。
+    """
+    names = _chunk_block_names(nbt_dict)
+    if "minecraft:obsidian" not in names:
+        return False
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    # 红石方块实体
+    for be in _extract_block_entities(level):
+        if _norm_id(be.get("id")) in {r.replace("minecraft:", "") for r in _REDSTONE_BE_IDS}:
+            return True
+    # 红石方块
+    return any(n in names for n in _REDSTONE_BLOCKS)
+
+
+def has_obsidian(nbt_dict):
+    """区块是否含黑曜石（地狱门框架）。"""
+    return "minecraft:obsidian" in _chunk_block_names(nbt_dict)
+
+
+def has_redstone_kit(nbt_dict):
+    """区块是否含红石器件（dropper/hopper/红石方块等），用作常加载器信号。"""
+    names = _chunk_block_names(nbt_dict)
+    if any(n in names for n in _REDSTONE_BLOCKS):
+        return True
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    ids = {r.replace("minecraft:", "") for r in _REDSTONE_BE_IDS}
+    for be in _extract_block_entities(level):
+        if _norm_id(be.get("id")) in ids:
+            return True
+    return False
+
+
 def analyze_chunk(nbt_dict):
     """
     分析一个区块，返回 {factor_key: count}。

@@ -46,9 +46,18 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
 
     all_results = []
     for rdir, dim_name in find_region_dirs(world_dir, dim_sel):
+        portal_chunks = set()
+        obsidian_chunks = set()
+        redstone_chunks = set()
         def gen():
             n = 0
             for cx, cz, nbt_data in region.scan_region_dir(rdir):
+                if factors.has_portal(nbt_data):
+                    portal_chunks.add((cx, cz))
+                if factors.has_obsidian(nbt_data):
+                    obsidian_chunks.add((cx, cz))
+                if factors.has_redstone_kit(nbt_data):
+                    redstone_chunks.add((cx, cz))
                 counts = factors.analyze_chunk(nbt_data)
                 if entity_part.exists():
                     entity_part.merged_counts(cx, cz, counts)
@@ -57,6 +66,12 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
                 if limit_chunks and n >= limit_chunks:
                     break
         res = analyze.analyze(gen(), world_name=world_name, data_version=data_version)
+        # 跨区块匹配：红石装置区块 且 相邻(半径1)有黑曜石 → 疑似传送门常加载器
+        for (cx, cz) in redstone_chunks:
+            if any((cx + dx, cz + dz) in obsidian_chunks
+                   for dx in (-1, 0, 1) for dz in (-1, 0, 1)):
+                portal_chunks.add((cx, cz))
+        res.portal_chunks = portal_chunks
         res.dimension = dim_name
         all_results.append((rdir, dim_name, res))
     return all_results
@@ -114,6 +129,11 @@ def main(argv=None):
         if player:
             from chunklag import loaders
             regions = loaders.collect_regions(world_dir)
+            portal = getattr(res, "portal_chunks", None)
+            if portal:
+                pr = {(cx + dx, cz + dz) for cx, cz in portal
+                      for dx in range(-3, 4) for dz in range(-3, 4)}
+                regions.append(("portal", "传送门常加载区", pr))
             data = mapdata_mod.build_union_map(res, player, args.simdist, regions, top_n=args.top)
             print("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
                   % (int(player[0] // 16), int(player[2] // 16), args.simdist,

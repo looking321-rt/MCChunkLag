@@ -110,7 +110,7 @@ function colorFor(score){
   return [230,50,50];
 }
 
-const REGION_COLOR={spawn:'rgba(80,230,80,.95)',forced:'rgba(190,120,255,.95)',mod:'rgba(255,145,40,.95)'};
+const REGION_COLOR={spawn:'rgba(80,230,80,.95)',forced:'rgba(190,120,255,.95)',mod:'rgba(255,145,40,.95)',portal:'rgba(180,80,255,.95)'};
 // ---- 离屏位图（每区块 1 像素） ----
 const off = document.createElement('canvas');
 off.width = mapW; off.height = mapZ;
@@ -187,21 +187,20 @@ function drawChrome(){
   const x0=Math.floor((0-offX)/scale+B.minX), x1=Math.floor((W-offX)/scale+B.minX);
   const z0=Math.floor((0-offY)/scale+B.minZ), z1=Math.floor((H-offY)/scale+B.minZ);
   document.getElementById('crange').textContent=`方块X ${bx(x0)}…${bx(x1)+15} · Z ${bz(z0)}…${bz(z1)+15}`;
-  // 比例尺：nice 取值（1区块=16米），随缩放切换 m/cm，条长约 100px
+  // 比例尺：标准 nice 取值（1区块=16米），条宽≈90px，随缩放 m/cm 切换
   const mPerPx=16/scale;
-  const inCm = mPerPx < 1;
-  const unitPx = inCm ? mPerPx*100 : mPerPx;   // 每像素的 cm 或 m
-  const targets = inCm ? [5,10,20,50,100,200,500] : [10,20,50,100,200,500,1000,2000,5000];
-  let best=targets[0], bestPx=0, bestDiff=1e9;
-  for(const t of targets){
-    const px=t/unitPx;
-    if(px>=50 && px<=160){ const d=Math.abs(px-100); if(d<bestDiff){bestDiff=d;best=t;bestPx=px;} }
+  if(mPerPx>0){
+    const step=mPerPx*90;                        // 目标 90px 对应米数
+    const pow=Math.pow(10,Math.floor(Math.log10(Math.max(step,1e-6))));
+    let nice=pow;
+    for(const m of [1,2,5,10]){ if(pow*m>=step){ nice=pow*m; break; } }
+    const inCm = nice<1;
+    const sdet=document.getElementById('scaletext');
+    sdet.textContent=(inCm? Math.round(nice*100) : Math.round(nice)) + (inCm? ' cm':' m');
+    const px=nice/mPerPx;
+    const sbar=document.querySelector('#scalebar i');
+    sbar.style.width=Math.min(100,(px/(document.getElementById('scalebar').clientWidth||100))*100)+'%';
   }
-  if(bestPx===0){ best=targets[0]; bestPx=Math.max(50,best/unitPx); }
-  const sdet=document.getElementById('scaletext');
-  sdet.textContent = best + (inCm? ' cm':' m');
-  const sbar=document.querySelector('#scalebar i');
-  sbar.style.width=Math.min(100, (bestPx/(document.getElementById('scalebar').clientWidth||100))*100)+'%';
 }
 
 function render(){
