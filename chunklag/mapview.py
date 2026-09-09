@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-HTML 交互地图渲染 —— 把分析数据画成一张可缩放/平移/悬停下钻的区块评分热力图。
-
-渲染方案（性能友好）：
-  - 先构建一张**离屏位图**（每区块 1 像素），
-  - 主 Canvas 每次用 GPU `drawImage` 缩放到视口（缩放/平移极快，不再逐像素遍历）。
-交互：滚轮缩放(围绕光标)、拖拽平移、悬停看因子、实时坐标、TOP 红色标记。
+HTML 交互地图渲染 —— 借鉴 chunkbase 的成熟地图交互：
+  - 离屏位图(每区块1像素) + GPU drawImage 缩放平移（流畅）
+  - X/Z 坐标轴刻度（nice interval 自适应，仿 chunkbase）
+  - 侧边栏坐标数据面板（视图中心/鼠标坐标+评分/视口范围/比例尺）
+  - 右下角缩放控件（+/−/适配）
+  - 悬停下钻 tooltip、点击选中区块、TOP 红色标记
 """
 import json
 
@@ -21,43 +21,64 @@ _TEMPLATE = """<!DOCTYPE html>
     font-family:Segoe UI,Microsoft YaHei,sans-serif;}
   #wrap{position:fixed;inset:0;}
   canvas{display:block;width:100%;height:100%;cursor:crosshair;}
-  #panel{position:fixed;top:12px;left:12px;background:rgba(20,20,30,.85);padding:10px 14px;
-    border-radius:10px;font-size:12px;max-width:280px;}
+  .card{position:fixed;background:rgba(18,18,26,.88);border-radius:10px;padding:10px 14px;
+    font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,.4);}
+  #panel{top:12px;left:12px;max-width:280px;}
   #panel h1{font-size:14px;margin:0 0 6px;color:#89b4fa;}
-  #coords{margin-top:6px;font-size:14px;color:#a6e3a1;font-weight:bold;}
-  #legend{margin-top:6px;display:flex;align-items:center;gap:6px;font-size:11px;}
+  #legend{margin-top:8px;display:flex;align-items:center;gap:6px;font-size:11px;}
   #legend canvas{width:120px;height:12px;display:block;}
-  #arrow{position:fixed;top:12px;right:12px;width:230px;background:rgba(20,20,30,.85);
-    border-radius:10px;max-height:70vh;overflow:auto;font-size:12px;}
-  #arrow h2{font-size:13px;margin:8px 12px;color:#f38ba8;}
-  #arrow .row{padding:4px 12px;cursor:pointer;border-top:1px solid #222;}
-  #arrow .row:hover{background:#2a2a3a;}
+  #coordbar{bottom:12px;left:12px;line-height:1.7;min-width:230px;}
+  #coordbar b{color:#89b4fa;}
+  #coordbar .mouse{color:#a6e3a1;font-size:13px;}
+  #coordrow{margin-top:6px;display:flex;gap:8px;align-items:center;}
+  #scalebar{flex:1;height:5px;background:#333;border-radius:3px;position:relative;}
+  #scalebar i{position:absolute;left:0;top:0;height:5px;background:#89b4fa;border-radius:3px;}
+  #zoom{right:12px;bottom:12px;display:flex;flex-direction:column;gap:4px;}
+  #zoom button{width:34px;height:34px;border:0;border-radius:8px;background:#313244;
+    color:#e5e5e5;font-size:16px;cursor:pointer;}
+  #zoom button:hover{background:#45475a;}
+  #arrow{top:12px;right:12px;width:230px;max-height:70vh;overflow:auto;}
+  #arrow h2{font-size:13px;margin:2px 0 6px;color:#f38ba8;}
+  #arrow .row{padding:4px 0;cursor:pointer;border-top:1px solid #26262f;}
+  #arrow .row:hover{color:#a6e3a1;}
   #arrow .rank{color:#89b4fa;font-weight:bold;margin-right:6px;}
   #tooltip{position:fixed;pointer-events:none;background:rgba(15,15,22,.95);padding:8px 10px;
     border-radius:8px;font-size:12px;display:none;max-width:300px;line-height:1.5;}
   #tooltip b{color:#a6e3a1;}
-  #info{color:#7f849c;font-size:11px;margin-top:8px;line-height:1.5;}
   .btn{background:#313244;border:0;color:#e5e5e5;padding:3px 8px;border-radius:6px;
     cursor:pointer;font-size:11px;margin-top:6px;margin-right:4px;}
   .btn:hover{background:#45475a;}
+  #hint{color:#7f849c;font-size:11px;margin-top:8px;line-height:1.5;}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="map"></canvas></div>
 
-<div id="panel">
+<div id="panel" class="card">
   <h1>MC 区块卡顿热力图</h1>
-  <div id="meta">区块数: <span id="total"></span></div>
-  <div id="coords">坐标: —</div>
-  <div id="legend">
-    <span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span>
-  </div>
-  <div style="margin-top:6px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子</div>
-  <button class="btn" id="reset">重置视图</button>
-  <div id="info">着色按卡顿评分(启发式)分档；红块=最卡TOP标记；非真实mspt。</div>
+  <div id="total">区块数: —</div>
+  <div id="legend"><span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span></div>
+  <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
+  <button class="btn" id="reset">适配视图</button>
+  <div id="hint">着色按卡顿分(启发式)；红块=最卡 TOP；非真实 mspt。</div>
 </div>
 
-<div id="arrow"><h2>🔴 最卡 TOP 区块</h2><div class="list" id="toplist"></div></div>
+<div id="coordbar" class="card">
+  <div><b>视图中心</b> <span id="ccenter">(—, —)</span></div>
+  <div><b>鼠标</b> <span id="cmouse" class="mouse">(—, —)</span></div>
+  <div><b>范围</b> <span id="crange">—</span></div>
+  <div id="coordrow">
+    <b style="white-space:nowrap">比例尺</b>
+    <div id="scalebar"><i style="width:50%"></i></div><b id="scaletext" style="width:64px">—</b>
+  </div>
+  <div id="sdetail" style="color:#a6e3a1;margin-top:4px;"></div>
+</div>
+
+<div id="zoom" class="card">
+  <button id="zin">+</button><button id="zout">−</button><button id="zfit">⊡</button>
+</div>
+
+<div id="arrow" class="card"><h2>🔴 最卡 TOP 区块</h2><div id="toplist"></div></div>
 <div id="tooltip"></div>
 
 <script id="mapdata" type="application/json">__DATA__</script>
@@ -70,15 +91,16 @@ if(!B){ document.body.innerHTML='<h3 style="padding:30px">无区块数据</h3>';
 else{
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
-let W=0, H=0, DPR=1;
+let W=0,H=0,DPR=1;
 let scale=1, offX=0, offY=0;
+let hover=null, selected=null;
 const mapW = B.maxX-B.minX+1, mapZ = B.maxZ-B.minZ+1;
 const chunks = new Map();
 for(const c of DATA.chunks) chunks.set(c.x*100000+c.z, c);
 
 function lerp(a,b,t){return Math.round(a+(b-a)*t);}
 function colorFor(score){
-  if(score<=0) return [40,40,48];
+  if(score<=0) return [42,42,50];
   const q50=Math.max(DATA.q50,1), q90=Math.max(DATA.q90,q50+1);
   let t;
   if(score<=q50) t=0.35*score/q50;
@@ -90,7 +112,7 @@ function colorFor(score){
   return [lerp(a[0],b[0],ft), lerp(a[1],b[1],ft), lerp(a[2],b[2],ft)];
 }
 
-// ---- 构建离屏位图（每区块 1 像素） ----
+// ---- 离屏位图（每区块 1 像素） ----
 const off = document.createElement('canvas');
 off.width = mapW; off.height = mapZ;
 const octx = off.getContext('2d');
@@ -111,34 +133,89 @@ function resize(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
 }
 function fit(){
-  scale = Math.min(W/mapW, H/mapZ);
-  scale = Math.max(Math.min(scale,40), 0.05);
-  offX = (W - mapW*scale)/2;
-  offY = (H - mapZ*scale)/2;
+  scale=Math.min(W/mapW,H/mapZ);
+  scale=Math.max(Math.min(scale,40),0.05);
+  offX=(W-mapW*scale)/2; offY=(H-mapZ*scale)/2;
   render();
 }
-let raf=0;
+
+// nice interval：让刻度间距约 90px
+function niceInterval(){
+  const blocks=90/scale; let pow=1;
+  while(pow<blocks) pow*=2;
+  const cands=[pow/2,pow,pow*2];
+  let best=cands[0];
+  for(const c of cands) if(Math.abs(c-blocks)<Math.abs(best-blocks)) best=c;
+  return Math.max(1, best);
+}
+
+function worldToScreen(cx,cz){return [sx(cx),sy(cz)];}
+
+// 坐标轴 + 比例尺 + 坐标面板
+function drawChrome(){
+  const iv=niceInterval();
+  const cx0=Math.ceil(((0-offX)/scale+B.minX)/iv)*iv;
+  const cx1=Math.floor(((W-offX)/scale+B.minX)/iv)*iv;
+  const cz0=Math.ceil(((0-offY)/scale+B.minZ)/iv)*iv;
+  const cz1=Math.floor(((H-offY)/scale+B.minZ)/iv)*iv;
+  ctx.textBaseline='middle'; ctx.font='12px Segoe UI,Microsoft YaHei';
+  ctx.fillStyle='rgba(0,0,0,.55)';
+  // X 轴（顶部）
+  for(let cx=cx0; cx<=cx1; cx+=iv){
+    const x=sx(cx); if(x<-40||x>W+40) continue;
+    const txt=String(cx);
+    const w=ctx.measureText(txt).width+12;
+    ctx.fillRect(x-w/2,4,w,18);
+    ctx.fillStyle='#fff'; ctx.fillText(txt,x,13); ctx.fillStyle='rgba(0,0,0,.55)';
+  }
+  // Z 轴（左侧）
+  for(let cz=cz0; cz<=cz1; cz+=iv){
+    const y=sy(cz); if(y<-40||y>H+40) continue;
+    const txt=String(cz);
+    const w=ctx.measureText(txt).width+12;
+    ctx.fillRect(4,y-9,w,18);
+    ctx.fillStyle='#fff'; ctx.fillText(txt,10,y); ctx.fillStyle='rgba(0,0,0,.55)';
+  }
+  // 坐标面板
+  const ccx=Math.floor((W/2-offX)/scale+B.minX), ccz=Math.floor((H/2-offY)/scale+B.minZ);
+  document.getElementById('ccenter').textContent=`(${ccx}, ${ccz})`;
+  const x0=Math.floor((0-offX)/scale+B.minX), x1=Math.floor((W-offX)/scale+B.minX);
+  const z0=Math.floor((0-offY)/scale+B.minZ), z1=Math.floor((H-offY)/scale+B.minZ);
+  document.getElementById('crange').textContent=`X ${x0}…${x1} · Z ${z0}…${z1}`;
+  // 比例尺：1区块=16米
+  const mPerPx=16/scale;
+  const sdet=document.getElementById('scaletext');
+  sdet.textContent = mPerPx>=1? `≈${Math.round(mPerPx)}m` : `≈${(mPerPx*100).toFixed(0)}cm`;
+  const sbar=document.querySelector('#scalebar i');
+  // 比例条宽度示意 100m 对应的 px
+  const px100=100/(16/scale);
+  sbar.style.width=Math.min(100, (px100/ (document.getElementById('scalebar').clientWidth||100))*100)+'%';
+}
+
 function render(){
-  cancelAnimationFrame(raf);
-  raf=requestAnimationFrame(()=>{
-    ctx.imageSmoothingEnabled = false;   // 格状热力图，透明边界更清晰
+  requestAnimationFrame(()=>{
+    ctx.imageSmoothingEnabled=false;
     ctx.fillStyle='#1a1a22'; ctx.fillRect(0,0,W,H);
     ctx.drawImage(off, offX, offY, mapW*scale, mapZ*scale);
-    // 网格线（放得够大时）
     if(scale>=12){
       ctx.strokeStyle='rgba(255,255,255,.10)'; ctx.lineWidth=1;
+      ctx.beginPath();
       const c0=Math.floor((0-offX)/scale+B.minX), c1=Math.ceil((W-offX)/scale+B.minX);
       const r0=Math.floor((0-offY)/scale+B.minZ), r1=Math.ceil((H-offY)/scale+B.minZ);
-      ctx.beginPath();
       for(let cx=c0;cx<=c1;cx++){ctx.moveTo(sx(cx),0);ctx.lineTo(sx(cx),H);}
       for(let cz=r0;cz<=r1;cz++){ctx.moveTo(0,sy(cz));ctx.lineTo(W,sy(cz));}
       ctx.stroke();
     }
-    // TOP 红色标记
+    // 选中高亮
+    if(selected){ ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+      ctx.strokeRect(sx(selected.x)-1, sy(selected.z)-1, scale+2, scale+2); }
+    // TOP 红块
     for(const t of DATA.top){
+      if(selected && t.x===selected.x && t.z===selected.z) continue;
       ctx.fillStyle='rgba(255,60,60,.5)';
       ctx.fillRect(sx(t.x), sy(t.z), Math.max(scale,3), Math.max(scale,3));
     }
+    drawChrome();
   });
 }
 
@@ -152,26 +229,36 @@ function renderBar(){
 
 canvas.addEventListener('wheel',e=>{
   e.preventDefault();
-  const mx=e.clientX, my=e.clientY;
-  const f=e.deltaY<0?1.15:1/1.15;
+  const mx=e.clientX,my=e.clientY,f=e.deltaY<0?1.15:1/1.15;
   const nx=Math.min(Math.max(scale*f,0.05),80);
-  const wx=(mx-offX)/scale + B.minX, wz=(my-offY)/scale + B.minZ;
-  offX = mx - (wx-B.minX)*nx;
-  offY = my - (wz-B.minZ)*nx;
-  scale=nx; render();
+  const wx=(mx-offX)/scale+B.minX, wz=(my-offY)/scale+B.minZ;
+  offX=mx-(wx-B.minX)*nx; offY=my-(wz-B.minZ)*nx; scale=nx; render();
 },{passive:false});
 
-let drag=false,lx=0,ly=0;
-canvas.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
-window.addEventListener('mouseup',()=>drag=false);
+let drag=false,lx=0,ly=0,sx0=0,sy0=0,moved=false;
+canvas.addEventListener('mousedown',e=>{drag=true;moved=false;lx=sx0=e.clientX;ly=sy0=e.clientY;});
+window.addEventListener('mouseup',e=>{
+  if(drag && !moved){
+    // 点击选中
+    const cx=Math.floor((e.clientX-offX)/scale+B.minX);
+    const cz=Math.floor((e.clientY-offY)/scale+B.minZ);
+    const c=chunks.get(cx*100000+cz);
+    selected = c? {x:cx,z:cz} : null;
+    render(); updateDetail(cx,cz);
+  }
+  drag=false;
+});
 canvas.addEventListener('mousemove',e=>{
-  if(drag){ offX+=e.clientX-lx; offY+=e.clientY-ly; lx=e.clientX; ly=e.clientY; render(); return; }
+  if(drag){
+    const dx=e.clientX-lx, dy=e.clientY-ly;
+    if(Math.abs(e.clientX-sx0)+Math.abs(e.clientY-sy0)>4) moved=true;
+    offX+=dx; offY+=dy; lx=e.clientX; ly=e.clientY; render(); return;
+  }
   const cx=Math.floor((e.clientX-offX)/scale+B.minX);
   const cz=Math.floor((e.clientY-offY)/scale+B.minZ);
   const c=chunks.get(cx*100000+cz);
-  const info=document.getElementById('coords');
-  if(c){ info.textContent=`区块 (${cx}, ${cz}) · 评分 ${c.s}`; }
-  else { info.textContent=`区块 (${cx}, ${cz})`; }
+  hover=c? {x:cx,z:cz} : null;
+  document.getElementById('cmouse').textContent=`(${cx}, ${cz})${c? ' 评分 '+c.s : ''}`;
   const tip=document.getElementById('tooltip');
   if(c){
     let html=`<b>区块 (${cx}, ${cz})</b> · 评分 <b style="color:#f38ba8">${c.s}</b>`;
@@ -183,14 +270,31 @@ canvas.addEventListener('mousemove',e=>{
   } else tip.style.display='none';
 });
 
+function updateDetail(cx,cz){
+  const c=chunks.get(cx*100000+cz);
+  const sd=document.getElementById('sdetail');
+  if(c){
+    const keys=Object.keys(c.f);
+    sd.textContent = '选中 '+cx+','+cz+' · 评分 '+c.s + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):' | 无因子');
+  } else sd.textContent='';
+}
+
 document.getElementById('reset').onclick=fit;
-document.getElementById('total').textContent=DATA.total;
+document.getElementById('zin').onclick=()=>{zoomAround(W/2,H/2,1.25);};
+document.getElementById('zout').onclick=()=>{zoomAround(W/2,H/2,0.8);};
+document.getElementById('zfit').onclick=fit;
+function zoomAround(mx,my,f){
+  const nx=Math.min(Math.max(scale*f,0.05),80);
+  const wx=(mx-offX)/scale+B.minX, wz=(my-offY)/scale+B.minZ;
+  offX=mx-(wx-B.minX)*nx; offY=my-(wz-B.minZ)*nx; scale=nx; render();
+}
+document.getElementById('total').textContent='区块数: '+DATA.total;
 
 const tl=document.getElementById('toplist');
 DATA.top.forEach((t,i)=>{
   const r=document.createElement('div'); r.className='row';
   r.innerHTML=`<span class="rank">${i+1}.</span>(${t.x}, ${t.z}) 评分 <b>${t.s}</b>`;
-  r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale; render(); };
+  r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale; selected=t; render(); updateDetail(t.x,t.z); };
   tl.appendChild(r);
 });
 
