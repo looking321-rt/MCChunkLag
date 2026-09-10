@@ -122,19 +122,24 @@ def portal_region(portal_chunks, radius=1):
     return out
 
 
-def portal_regions(portal_chunks, radius=1):
+def portal_regions(portal_chunks):
     """
-    返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
+    返回 **每个地狱门装置的三个同心层 region**：[(type, label, chunks), ...]。
 
-    关键：地图是按 region 画「外接框」的，若把所有装置合成一个 region，
-    它们的外接框会糊成一大片。必须每个装置单独一个 region，才能各画一个小框。
+    真实机制（传送门区块加载器）：
+      3×3 实体处理层 / 5×5 红石处理层 / 7×7 整体层（含最外圈懒惰区块）。
+    关键：地图按 region 画「外接框」，必须每装置单独 region，否则外接框会糊成一大片。
     """
+    layers = [(1, "portal_core", "传送门·实体层 3×3"),
+              (2, "portal_red", "传送门·红石层 5×5"),
+              (3, "portal_lazy", "传送门·整体层 7×7")]
     out = []
     for comp in cluster_chunks(portal_chunks):
         cx, cz = cluster_center(comp)
-        s = {(cx + dx, cz + dz) for dx in range(-radius, radius + 1)
-             for dz in range(-radius, radius + 1)}
-        out.append(("portal", "传送门常加载区", s))
+        for r, typ, lab in layers:
+            s = {(cx + dx, cz + dz) for dx in range(-r, r + 1)
+                 for dz in range(-r, r + 1)}
+            out.append((typ, lab, s))
     return out
 
 

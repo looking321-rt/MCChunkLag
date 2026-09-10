@@ -110,7 +110,7 @@ function colorFor(score){
   return [230,50,50];
 }
 
-const REGION_COLOR={spawn:'rgba(80,230,80,.95)',forced:'rgba(190,120,255,.95)',mod:'rgba(255,145,40,.95)',portal:'rgba(180,80,255,.95)'};
+const REGION_COLOR={spawn:'rgba(80,230,80,.95)',forced:'rgba(190,120,255,.95)',mod:'rgba(255,145,40,.95)',portal:'rgba(180,80,255,.95)',portal_core:'rgba(170,50,255,.95)',portal_red:'rgba(200,130,255,.75)',portal_lazy:'rgba(215,185,255,.5)'};
 // ---- 离屏位图（每区块 1 像素） ----
 const off = document.createElement('canvas');
 off.width = mapW; off.height = mapZ;
@@ -325,9 +325,10 @@ function zoomAround(mx,my,f){
     }
     const rl=document.getElementById('regionlegend');
     if(DATA.regions && DATA.regions.length){
-      rl.innerHTML=DATA.regions.map(rg=>
-        '<span style="display:inline-block;width:10px;height:10px;background:'+(REGION_COLOR[rg.type]||'#888')+';margin-right:4px"></span>'+rg.label
-      ).join('<br>');
+      const seen=new Set();
+      rl.innerHTML=DATA.regions.filter(rg=>{ if(seen.has(rg.label)) return false; seen.add(rg.label); return true; })
+        .map(rg=>'<span style="display:inline-block;width:10px;height:10px;background:'+(REGION_COLOR[rg.type]||'#888')+';margin-right:4px"></span>'+rg.label)
+        .join('<br>');
     }
 
 const tl=document.getElementById('toplist');

@@ -47,17 +47,12 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
     all_results = []
     for rdir, dim_name in find_region_dirs(world_dir, dim_sel):
         portal_chunks = set()
-        obsidian_chunks = set()
-        redstone_chunks = set()
         def gen():
             n = 0
             for cx, cz, nbt_data in region.scan_region_dir(rdir):
+                # 真门判据：区块含 nether_portal 方块（黑曜石/红石太常见，会大量误报）
                 if factors.has_portal(nbt_data):
                     portal_chunks.add((cx, cz))
-                if factors.has_obsidian(nbt_data):
-                    obsidian_chunks.add((cx, cz))
-                if factors.has_redstone_kit(nbt_data):
-                    redstone_chunks.add((cx, cz))
                 counts = factors.analyze_chunk(nbt_data)
                 if entity_part.exists():
                     entity_part.merged_counts(cx, cz, counts)
@@ -66,11 +61,6 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
                 if limit_chunks and n >= limit_chunks:
                     break
         res = analyze.analyze(gen(), world_name=world_name, data_version=data_version)
-        # 跨区块匹配：红石装置区块 且 相邻(半径1)有黑曜石 → 疑似传送门常加载器
-        for (cx, cz) in redstone_chunks:
-            if any((cx + dx, cz + dz) in obsidian_chunks
-                   for dx in (-1, 0, 1) for dz in (-1, 0, 1)):
-                portal_chunks.add((cx, cz))
         res.portal_chunks = portal_chunks
         res.dimension = dim_name
         all_results.append((rdir, dim_name, res))
