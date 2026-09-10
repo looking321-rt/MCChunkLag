@@ -77,6 +77,51 @@ def _expand(chunks, r):
             for dx in range(-r, r + 1) for dz in range(-r, r + 1)}
 
 
+def cluster_chunks(chunks):
+    """把相邻(切比雪夫距离≤1)的区块聚成连通分量，每个分量=一个传送门装置。"""
+    remaining = set(chunks)
+    clusters = []
+    while remaining:
+        seed = remaining.pop()
+        comp = {seed}
+        stack = [seed]
+        while stack:
+            cx, cz = stack.pop()
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    n = (cx + dx, cz + dz)
+                    if n in remaining:
+                        remaining.discard(n)
+                        comp.add(n)
+                        stack.append(n)
+        clusters.append(comp)
+    return clusters
+
+
+def cluster_center(comp):
+    """取连通分量的中心区块（质心四舍五入）。"""
+    xs = [c[0] for c in comp]
+    zs = [c[1] for c in comp]
+    return (int(round(sum(xs) / len(xs))), int(round(sum(zs) / len(zs))))
+
+
+def portal_region(portal_chunks, radius=1):
+    """
+    传送门常加载区：把识别到的区块**聚类成若干「地狱门装置」**，再以每个装置中心
+    按游戏机制向外扩展 radius 圈。
+
+    Wiki：实体穿过传送门 → 对面板区块 + 周围 8 区块（3×3）。默认 radius=1 即 3×3。
+    （不是对每个识别区块各自扩，避免相邻装置把范围膨胀）
+    """
+    out = set()
+    for comp in cluster_chunks(portal_chunks):
+        cx, cz = cluster_center(comp)
+        for dx in range(-radius, radius + 1):
+            for dz in range(-radius, radius + 1):
+                out.add((cx + dx, cz + dz))
+    return out
+
+
 def read_mod_forced(world_dir, expand=1):
     """
     读取 mod 强制加载区块（FTB chunks.dat 的 ForgeForced）。

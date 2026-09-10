@@ -131,8 +131,7 @@ def main(argv=None):
             regions = loaders.collect_regions(world_dir)
             portal = getattr(res, "portal_chunks", None)
             if portal:
-                pr = {(cx + dx, cz + dz) for cx, cz in portal
-                      for dx in range(-3, 4) for dz in range(-3, 4)}
+                pr = loaders.portal_region(portal, 1)   # 聚类成装置，每装置中心扩3×3
                 regions.append(("portal", "传送门常加载区", pr))
             data = mapdata_mod.build_union_map(res, player, args.simdist, regions, top_n=args.top)
             print("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
