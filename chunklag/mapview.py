@@ -139,7 +139,7 @@ function resize(){
 }
 function fit(){
   scale=Math.min(W/mapW,H/mapZ);
-  scale=Math.max(Math.min(scale,80),16);
+  scale=Math.max(Math.min(scale,80),1.6);
   offX=(W-mapW*scale)/2; offY=(H-mapZ*scale)/2;
   render();
 }
@@ -189,7 +189,7 @@ function drawChrome(){
   document.getElementById('crange').textContent=`方块X ${bx(x0)}…${bx(x1)+15} · Z ${bz(z0)}…${bz(z1)+15}`;
   // 比例尺：缩放区间 16~80 px/区块（1区块=16方块=16m → 1px = 1m ~ 0.2m）
   // 进度条 = 缩放级别（16px→0%，80px→100%）
-  const SCALE_MIN=16, SCALE_MAX=80;
+  const SCALE_MIN=1.6, SCALE_MAX=80;
   const mPerPx=16/scale;
   const sdet=document.getElementById('scaletext');
   sdet.textContent = mPerPx>=1 ? ('1px='+mPerPx.toFixed(2)+'m') : ('1px='+Math.round(mPerPx*100)+'cm');
@@ -256,7 +256,7 @@ function renderBar(){
 canvas.addEventListener('wheel',e=>{
   e.preventDefault();
   const mx=e.clientX,my=e.clientY,f=e.deltaY<0?1.15:1/1.15;
-  const nx=Math.min(Math.max(scale*f,16),80);
+  const nx=Math.min(Math.max(scale*f,1.6),80);
   const wx=(mx-offX)/scale+B.minX, wz=(my-offY)/scale+B.minZ;
   offX=mx-(wx-B.minX)*nx; offY=my-(wz-B.minZ)*nx; scale=nx; render();
 },{passive:false});
@@ -310,7 +310,7 @@ document.getElementById('zin').onclick=()=>{zoomAround(W/2,H/2,1.25);};
 document.getElementById('zout').onclick=()=>{zoomAround(W/2,H/2,0.8);};
 document.getElementById('zfit').onclick=fit;
 function zoomAround(mx,my,f){
-  const nx=Math.min(Math.max(scale*f,16),80);
+  const nx=Math.min(Math.max(scale*f,1.6),80);
   const wx=(mx-offX)/scale+B.minX, wz=(my-offY)/scale+B.minZ;
   offX=mx-(wx-B.minX)*nx; offY=my-(wz-B.minZ)*nx; scale=nx; render();
 }

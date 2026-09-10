@@ -122,6 +122,22 @@ def portal_region(portal_chunks, radius=1):
     return out
 
 
+def portal_regions(portal_chunks, radius=1):
+    """
+    返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
+
+    关键：地图是按 region 画「外接框」的，若把所有装置合成一个 region，
+    它们的外接框会糊成一大片。必须每个装置单独一个 region，才能各画一个小框。
+    """
+    out = []
+    for comp in cluster_chunks(portal_chunks):
+        cx, cz = cluster_center(comp)
+        s = {(cx + dx, cz + dz) for dx in range(-radius, radius + 1)
+             for dz in range(-radius, radius + 1)}
+        out.append(("portal", "传送门常加载区", s))
+    return out
+
+
 def read_mod_forced(world_dir, expand=1):
     """
     读取 mod 强制加载区块（FTB chunks.dat 的 ForgeForced）。
