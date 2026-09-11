@@ -67,6 +67,36 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
     return all_results
 
 
+def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10):
+    """
+    把某个维度的分析结果渲染成交互地图 HTML（玩家模拟区 ∪ 常加载区）。
+
+    返回一行描述文字（供 CLI / 批量扫描打印）。player=None 时自动从存档读玩家位置。
+    """
+    from chunklag.mapview import render_html_map
+    from chunklag import mapdata as mapdata_mod
+
+    if player is None:
+        player = leveldat.read_player_position(world_dir)
+    if player:
+        from chunklag import loaders
+        regions = loaders.collect_regions(world_dir)
+        portal = getattr(res, "portal_chunks", None)
+        if portal:
+            # 每个地狱门装置各一个 region（各画小框），避免合成一个大外接框糊一片
+            regions.extend(loaders.portal_regions(portal, 1))
+        data = mapdata_mod.build_union_map(res, player, simdist, regions, top_n=top_n)
+        msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
+               % (int(player[0] // 16), int(player[2] // 16), simdist,
+                  2 * simdist + 1, 2 * simdist + 1,
+                  ", ".join(r[1] for r in regions) if regions else "无"))
+    else:
+        data = mapdata_mod.build_map_data(res, top_n=top_n)
+        msg = "无玩家位置记录 → 输出全量地图"
+    render_html_map(data, out_path, top_n=top_n)
+    return msg
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="MC 存档区块卡顿原因分析器")
     parser.add_argument("world", help="存档目录（需含 level.dat + region/）")
@@ -108,29 +138,10 @@ def main(argv=None):
 
     # HTML 交互地图（取第一个维度/主世界）
     if args.map:
-        from chunklag.mapview import render_html_map
-        from chunklag import mapdata as mapdata_mod
         res = results[0][2]
-        player = None
-        if args.player:
-            player = (args.player[0], 0.0, args.player[1], "minecraft:overworld")
-        else:
-            player = leveldat.read_player_position(world_dir)
-        if player:
-            from chunklag import loaders
-            regions = loaders.collect_regions(world_dir)
-            portal = getattr(res, "portal_chunks", None)
-            if portal:
-                # 每个地狱门装置各一个 region（各画小框），避免合成一个大外接框糊一片
-                regions.extend(loaders.portal_regions(portal, 1))
-            data = mapdata_mod.build_union_map(res, player, args.simdist, regions, top_n=args.top)
-            print("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
-                  % (int(player[0] // 16), int(player[2] // 16), args.simdist,
-                     2 * args.simdist + 1, 2 * args.simdist + 1,
-                     ", ".join(r[1] for r in regions) if regions else "无"))
-        else:
-            data = mapdata_mod.build_map_data(res, top_n=args.top)
-        render_html_map(data, args.map, top_n=args.top)
+        player = (args.player[0], 0.0, args.player[1], "minecraft:overworld") if args.player else None
+        print(render_map_for(world_dir, res, args.map, simdist=args.simdist,
+                             player=player, top_n=args.top))
         print("已输出 HTML 交互地图: %s" % args.map)
 
     return 0
