@@ -106,8 +106,25 @@ def test_map():
     check("HTML 地图含内嵌JSON", "application/json" in txt, "")
 
 
+def test_portal_regions_and_merge():
+    """传送门：只保留最外层 7×7；重叠的装置框合并成一个外接框（内部线条消失）。"""
+    from chunklag import loaders
+    rs = loaders.portal_regions({(0, 0)})
+    check("传送门只出一层 region", len(rs) == 1, str(len(rs)))
+    check("传送门范围为 7×7", len(rs[0][2]) == 49, str(len(rs[0][2])))
+
+    two = loaders.portal_regions({(0, 0), (3, 0)})   # 两装置相隔 3 → 7×7 框重叠
+    check("重叠前仍是 2 个 region", len(two) == 2, str(len(two)))
+    merged = loaders.merge_region_boxes(two)
+    check("重叠框合并为 1 个", len(merged) == 1, str(len(merged)))
+    check("合并后覆盖两装置区块", {(0, 0), (3, 0)} <= merged[0][2], "")
+
+    far = loaders.merge_region_boxes(loaders.portal_regions({(0, 0), (50, 50)}))
+    check("不相交的框保持独立", len(far) == 2, str(len(far)))
+
+
 def test_render_map_with_portal():
-    """回归：识别到传送门时 render_map_for 要能带上分层 region。
+    """回归：识别到传送门时 render_map_for 要能带上常加载区 region。
 
     曾因多传半径参数（portal_regions(portal, 1)）在真实存档上报
     TypeError: portal_regions() takes 1 positional argument but 2 were given。
@@ -121,8 +138,7 @@ def test_render_map_with_portal():
                                   player=(8.0, 64.0, 8.0, "minecraft:overworld"), top_n=5)
     check("带传送门常加载区渲染不崩", os.path.exists(out), msg)
     txt = open(out, encoding="utf-8").read()
-    check("传送门三层 region 已注入",
-          "portal_core" in txt and "portal_red" in txt and "portal_lazy" in txt, "")
+    check("传送门 region 已注入", "传送门常加载区" in txt or "portal" in txt, "")
     check("常加载区已并入地图数据", "regions" in txt, "")
 
 
@@ -134,6 +150,7 @@ if __name__ == "__main__":
     test_analysis()
     test_report()
     test_map()
+    test_portal_regions_and_merge()
     test_render_map_with_portal()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

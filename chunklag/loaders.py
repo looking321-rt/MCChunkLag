@@ -124,22 +124,56 @@ def portal_region(portal_chunks, radius=1):
 
 def portal_regions(portal_chunks):
     """
-    返回 **每个地狱门装置的三个同心层 region**：[(type, label, chunks), ...]。
+    返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
 
-    真实机制（传送门区块加载器）：
-      3×3 实体处理层 / 5×5 红石处理层 / 7×7 整体层（含最外圈懒惰区块）。
-    关键：地图按 region 画「外接框」，必须每装置单独 region，否则外接框会糊成一大片。
+    只保留最外层「整体层 7×7」（它已含 3×3 实体层与 5×5 红石层）——三层都画会
+    糊成一片看不清；7×7 即传送门区块加载器的影响范围。
     """
-    layers = [(1, "portal_core", "传送门·实体层 3×3"),
-              (2, "portal_red", "传送门·红石层 5×5"),
-              (3, "portal_lazy", "传送门·整体层 7×7")]
     out = []
     for comp in cluster_chunks(portal_chunks):
         cx, cz = cluster_center(comp)
-        for r, typ, lab in layers:
-            s = {(cx + dx, cz + dz) for dx in range(-r, r + 1)
-                 for dz in range(-r, r + 1)}
-            out.append((typ, lab, s))
+        s = {(cx + dx, cz + dz) for dx in range(-3, 3 + 1)
+             for dz in range(-3, 3 + 1)}
+        out.append(("portal", "传送门常加载区", s))
+    return out
+
+
+def merge_region_boxes(regions):
+    """
+    把**相互重叠**的同类型 region 合并成一个外接框：两个框交叠时只留外围线条，
+    不再各画一圈让内部线条交叉糊在一起。不相交的保持独立。
+    """
+    boxes = []
+    for typ, label, chunks in regions:
+        if not chunks:
+            continue
+        xs = [c[0] for c in chunks]
+        zs = [c[1] for c in chunks]
+        boxes.append([typ, label, min(xs), max(xs), min(zs), max(zs), set(chunks)])
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if a[0] != b[0]:
+                    continue
+                # 任一轴不重叠 → 不相交（闭区间：贴边重叠 1 格也算相交）
+                if a[2] > b[3] or b[2] > a[3] or a[4] > b[5] or b[4] > a[5]:
+                    continue
+                boxes[i] = [a[0], a[1], min(a[2], b[2]), max(a[3], b[3]),
+                            min(a[4], b[4]), max(a[5], b[5]), a[6] | b[6]]
+                boxes.pop(j)
+                changed = True
+                break
+            if changed:
+                break
+
+    out = []
+    for typ, label, mnx, mxx, mnz, mxz, _chunks in boxes:
+        out.append((typ, label, {(x, z) for x in range(mnx, mxx + 1)
+                                 for z in range(mnz, mxz + 1)}))
     return out
 
 
