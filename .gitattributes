@@ -1,0 +1,5 @@
+# 统一行尾：默认 LF；Windows 脚本用 CRLF（避免脚本换行问题）
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
