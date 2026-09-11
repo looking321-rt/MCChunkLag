@@ -84,7 +84,8 @@ def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10):
         portal = getattr(res, "portal_chunks", None)
         if portal:
             # 每个地狱门装置各一个 region（各画小框），避免合成一个大外接框糊一片
-            regions.extend(loaders.portal_regions(portal, 1))
+            # 注意：portal_regions 内部已按 3×3/5×5/7×7 三层展开，不要再传半径
+            regions.extend(loaders.portal_regions(portal))
         data = mapdata_mod.build_union_map(res, player, simdist, regions, top_n=top_n)
         msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
                % (int(player[0] // 16), int(player[2] // 16), simdist,

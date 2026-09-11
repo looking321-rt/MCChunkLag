@@ -106,6 +106,26 @@ def test_map():
     check("HTML 地图含内嵌JSON", "application/json" in txt, "")
 
 
+def test_render_map_with_portal():
+    """回归：识别到传送门时 render_map_for 要能带上分层 region。
+
+    曾因多传半径参数（portal_regions(portal, 1)）在真实存档上报
+    TypeError: portal_regions() takes 1 positional argument but 2 were given。
+    """
+    import main as main_mod
+    res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+    res.portal_chunks = {(0, 0), (1, 0)}  # 模拟识别到传送门所在区块
+    out = os.path.join(ROOT, "tests", "map_portal_test.html")
+    # 传 player 才走「玩家模拟区 ∪ 常加载区」分支（合成存档 level.dat 里没有玩家位置）
+    msg = main_mod.render_map_for(FAKE_WORLD, res, out, simdist=2,
+                                  player=(8.0, 64.0, 8.0, "minecraft:overworld"), top_n=5)
+    check("带传送门常加载区渲染不崩", os.path.exists(out), msg)
+    txt = open(out, encoding="utf-8").read()
+    check("传送门三层 region 已注入",
+          "portal_core" in txt and "portal_red" in txt and "portal_lazy" in txt, "")
+    check("常加载区已并入地图数据", "regions" in txt, "")
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -114,5 +134,6 @@ if __name__ == "__main__":
     test_analysis()
     test_report()
     test_map()
+    test_render_map_with_portal()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)
