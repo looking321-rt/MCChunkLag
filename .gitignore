@@ -13,7 +13,7 @@ tests/report_*.txt
 tests/report_*.html
 tests/full_report.*
 tests/full_map.html
-tests/map_test.html
+tests/map_*.html
 
 # 批量扫描输出（scan.py）
 output/
