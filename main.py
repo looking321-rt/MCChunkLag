@@ -35,15 +35,16 @@ def find_region_dirs(world_dir, dim_sel):
     return result
 
 
-def _scan_dimension(dim_dir):
+def _scan_dimension(dim_dir, hook=None):
     """
     轻量扫描一个维度（只挑门/铁轨，不统计卡顿因子）：
     返回 (含门区块, 带加载器证据的门区块)。供跨维度成对判定用。
+    hook 见 analyze_world（补扫的 region 文件不在计划分母里，由 hook 自行补分母）。
     """
     portal, redstone, rail = set(), set(), set()
     rdir = os.path.join(dim_dir, "region")
     if os.path.isdir(rdir):
-        for cx, cz, nbt_data in region.scan_region_dir(rdir):
+        for cx, cz, nbt_data in region.scan_region_dir(rdir, hook=hook):
             if not factors.has_portal(nbt_data):
                 continue
             portal.add((cx, cz))
@@ -55,7 +56,7 @@ def _scan_dimension(dim_dir):
     return portal, loaders.loader_evidence(portal, redstone, rail, minecart)
 
 
-def _resolve_portal_loaders(world_dir, portal_info, all_results):
+def _resolve_portal_loaders(world_dir, portal_info, all_results, hook=None):
     """
     跨维度成对判定（主世界 ↔ 下界）：两侧都有地狱门 + 加载器证据才算常加载装置。
 
@@ -72,7 +73,7 @@ def _resolve_portal_loaders(world_dir, portal_info, all_results):
             continue        # 本侧没有任何带证据的门装置 → 必然不成对，不必扫对面（省时间）
         mate_dir = layout.dim_dir(world_dir, mate_id)
         if mate_dir:
-            portal_info[mate_id] = _scan_dimension(mate_dir)   # 无该维度 → 留空 = 不成对
+            portal_info[mate_id] = _scan_dimension(mate_dir, hook=hook)   # 无该维度 → 留空 = 不成对
 
     for dim_id, res in by_dim.items():
         key = layout.dim_key(dim_id)
@@ -86,8 +87,13 @@ def _resolve_portal_loaders(world_dir, portal_info, all_results):
             portal, armed, m_portal, m_armed, key == "0")
 
 
-def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
-    """分析存档，返回 [(region_dir, 维度名, AnalysisResult, 维度目录)]。dim_sel=-1/0/1/all。"""
+def analyze_world(world_dir, dim_sel="0", limit_chunks=0, hook=None):
+    """
+    分析存档，返回 [(region_dir, 维度名, AnalysisResult, 维度目录)]。dim_sel=-1/0/1/all。
+
+    hook（可选，默认 None = 原行为）= 进度/中断钩子（见 chunklag.scanjob）：
+    每个 region 文件与区块都会回调，钩子可抛 ScanCancelled 中断扫描。
+    """
     world_name, data_version = leveldat.describe_world(world_dir)
     pearls = loaders.read_ender_pearls(world_dir)      # 末影珍珠加载器（存在玩家数据里）
 
@@ -98,7 +104,7 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
         portal_chunks, redstone_chunks, rail_chunks = set(), set(), set()
         def gen():
             n = 0
-            for cx, cz, nbt_data in region.scan_region_dir(rdir):
+            for cx, cz, nbt_data in region.scan_region_dir(rdir, hook=hook):
                 # 真门判据：区块含 nether_portal 方块（黑曜石/红石太常见，会大量误报）；
                 # 是否算常加载器另由 _resolve_portal_loaders 跨维度成对判定。
                 if factors.has_portal(nbt_data):
@@ -129,7 +135,7 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
         portal_info[dim_id] = (portal_chunks, portal_armed)
         all_results.append((rdir, dim_name, res, dim_dir))
 
-    _resolve_portal_loaders(world_dir, portal_info, all_results)
+    _resolve_portal_loaders(world_dir, portal_info, all_results, hook=hook)
     return all_results
 
 

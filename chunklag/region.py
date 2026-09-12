@@ -110,14 +110,27 @@ class RegionFile:
 
 
 # 便捷函数：扫描目录里所有 .mca，迭代全部区块
-def scan_region_dir(region_dir):
+def scan_region_dir(region_dir, hook=None):
+    """
+    扫描目录里所有 .mca，迭代全部区块。
+
+    hook（可选）= 进度/中断钩子（见 chunklag.scanjob）：每进入一个 .mca 调
+    `on_file(path, size)`，每读完一个区块调 `on_chunk()`。默认 None 时行为与原来完全一致。
+
+    ⚠️ 中断信号必须继承 BaseException（如 ScanCancelled）—— 下面的 `except Exception`
+    是给坏文件的，普通异常会被它吞掉，取消就静默失效了。
+    """
     for name in sorted(os.listdir(region_dir)):
         if not name.endswith(".mca"):
             continue
         path = os.path.join(region_dir, name)
         try:
             rf = RegionFile(path)
+            if hook is not None:
+                hook.on_file(path, len(rf.data))
             for cx, cz, nbt_data in rf.iter_chunks():
                 yield cx, cz, nbt_data
+                if hook is not None:
+                    hook.on_chunk()
         except Exception:
             continue
