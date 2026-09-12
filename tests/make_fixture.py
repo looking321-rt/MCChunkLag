@@ -169,5 +169,55 @@ def build():
     print("已生成合成存档 -> %s" % FAKE_WORLD)
 
 
+PORTAL_WORLD = os.path.join(HERE, "portal_world")
+
+
+def _chunk_nbt_blocks(x, z, block_names, block_entity_ids=()):
+    """构造带方块 palette 的区块 NBT（1.18+ 结构：section.block_states.palette）。"""
+    sections = L(10, [C({
+        "Y": B(0),
+        "block_states": C({"palette": L(10, [C({"Name": S(n)}) for n in block_names])}),
+    })])
+    be = L(10, [C({"id": S(bid)}) for bid in block_entity_ids])
+    root = C({
+        "DataVersion": I(3465),
+        "Level": C({
+            "xPos": I(x),
+            "zPos": I(z),
+            "sections": sections,
+            "block_entities": be,
+        }),
+    })
+    return enc_compound(root)
+
+
+def build_portal_world():
+    """
+    合成「门判据」测试世界（两个互不相邻的装置）：
+      (0,0) 纯装饰门（黑曜石+传送门方块，0 红石）→ 不算常加载装置
+      (2,0) 门 + 红石装置（红石粉/中继器）      → 算常加载装置
+    """
+    os.makedirs(os.path.join(PORTAL_WORLD, "region"), exist_ok=True)
+    level = enc_compound(C({
+        "Data": C({
+            "LevelName": S("门判据测试"),
+            "DataVersion": I(3465),
+            "Version": C({"Id": I(3465)}),
+        }),
+    }))
+    with open(os.path.join(PORTAL_WORLD, "level.dat"), "wb") as f:
+        f.write(gzip.compress(level))
+
+    chunks = [
+        (0, 0, _chunk_nbt_blocks(0, 0, ["minecraft:obsidian", "minecraft:nether_portal"])),
+        (2, 0, _chunk_nbt_blocks(2, 0, ["minecraft:obsidian", "minecraft:nether_portal",
+                                        "minecraft:redstone_wire", "minecraft:repeater"])),
+    ]
+    with open(os.path.join(PORTAL_WORLD, "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region(chunks))
+    print("已生成门判据测试世界 -> %s" % PORTAL_WORLD)
+
+
 if __name__ == "__main__":
     build()
+    build_portal_world()

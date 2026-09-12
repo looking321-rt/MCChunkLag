@@ -47,12 +47,16 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
     all_results = []
     for rdir, dim_name in find_region_dirs(world_dir, dim_sel):
         portal_chunks = set()
+        portal_armed = set()
         def gen():
             n = 0
             for cx, cz, nbt_data in region.scan_region_dir(rdir):
-                # 真门判据：区块含 nether_portal 方块（黑曜石/红石太常见，会大量误报）
+                # 真门判据：区块含 nether_portal 方块（黑曜石/红石太常见，会大量误报）；
+                # 只有带红石装置的门才会周期性把实体送过门、常加载对面区块。
                 if factors.has_portal(nbt_data):
                     portal_chunks.add((cx, cz))
+                    if factors.has_redstone_kit(nbt_data):
+                        portal_armed.add((cx, cz))
                 counts = factors.analyze_chunk(nbt_data)
                 if entity_part.exists():
                     entity_part.merged_counts(cx, cz, counts)
@@ -62,6 +66,7 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
                     break
         res = analyze.analyze(gen(), world_name=world_name, data_version=data_version)
         res.portal_chunks = portal_chunks
+        res.portal_armed_chunks = portal_armed
         res.dimension = dim_name
         all_results.append((rdir, dim_name, res))
     return all_results
@@ -82,14 +87,21 @@ def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10):
         from chunklag import loaders
         regions = loaders.collect_regions(world_dir)
         portal = getattr(res, "portal_chunks", None)
+        portal_note = ""
         if portal:
-            # 每装置一个 7×7 框；重叠的装置框合并成一个外接框，只留外围线条
-            regions.extend(loaders.merge_region_boxes(loaders.portal_regions(portal)))
+            armed = getattr(res, "portal_armed_chunks", None)
+            # 每装置一个 7×7 框；重叠框合并成一个外接框。纯门（无红石装置）不算常加载器，先过滤
+            devs = loaders.merge_region_boxes(loaders.portal_regions(portal, armed))
+            regions.extend(devs)
+            n_armed = len(armed or ())
+            portal_note = (" | 地狱门: 门区块%d → 常加载框%d（带红石）; 无红石%d 已忽略"
+                           % (len(portal), len(devs), len(portal) - n_armed))
         data = mapdata_mod.build_union_map(res, player, simdist, regions, top_n=top_n)
-        msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s"
+        msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s%s"
                % (int(player[0] // 16), int(player[2] // 16), simdist,
                   2 * simdist + 1, 2 * simdist + 1,
-                  ", ".join(r[1] for r in regions) if regions else "无"))
+                  ", ".join(r[1] for r in regions) if regions else "无",
+                  portal_note))
     else:
         data = mapdata_mod.build_map_data(res, top_n=top_n)
         msg = "无玩家位置记录 → 输出全量地图"

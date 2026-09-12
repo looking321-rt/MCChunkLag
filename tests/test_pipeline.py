@@ -142,6 +142,46 @@ def test_render_map_with_portal():
     check("常加载区已并入地图数据", "regions" in txt, "")
 
 
+def test_portal_redstone_filter():
+    """回归：纯地狱门（0 红石）不算传送门常加载装置（2026-09-12 用户反馈）。
+
+    生电存档实测 9 个门区块里 7 个是纯装饰门（黑曜石门、0 红石），
+    旧判据只看 nether_portal 方块，把它们全画成常加载区。
+    """
+    import json
+    import re
+
+    import main as main_mod
+    from chunklag import loaders
+    from make_fixture import PORTAL_WORLD, build_portal_world
+
+    build_portal_world()
+    res = main_mod.analyze_world(PORTAL_WORLD, "0")[0][2]
+    check("扫到 2 个门区块", res.portal_chunks == {(0, 0), (2, 0)}, str(sorted(res.portal_chunks)))
+    check("只把带红石的门区块标为 armed", res.portal_armed_chunks == {(2, 0)},
+          str(sorted(res.portal_armed_chunks)))
+
+    check("纯门装置不出常加载区", loaders.portal_regions({(0, 0)}, set()) == [], "")
+    kept = loaders.portal_regions({(0, 0), (1, 0)}, {(1, 0)})
+    check("装置内任一块带红石即保留整装置",
+          len(kept) == 1 and len(kept[0][2]) == 49, str(kept))
+    only = loaders.portal_regions({(0, 0), (50, 50)}, {(50, 50)})
+    check("不相邻装置各自判定", len(only) == 1 and (50, 50) in only[0][2], str(only))
+
+    out = os.path.join(ROOT, "tests", "map_portal_filter_test.html")
+    msg = main_mod.render_map_for(PORTAL_WORLD, res, out, simdist=2,
+                                  player=(8.0, 64.0, 8.0, "minecraft:overworld"), top_n=5)
+    check("纯门存档渲染不崩", os.path.exists(out), msg)
+    txt = open(out, encoding="utf-8").read()
+    m = re.search(r'<script id="mapdata" type="application/json">(.*?)</script>', txt, re.S)
+    regions = json.loads(m.group(1))["regions"] if m else []
+    portal_regs = [r for r in regions if r["type"] == "portal"]
+    check("地图里只剩 1 个门常加载框", len(portal_regs) == 1, str(len(portal_regs)))
+    check("门常加载框覆盖带红石装置",
+          bool(portal_regs) and [2, 0] in portal_regs[0]["chunks"], str(portal_regs))
+    check("提示已忽略无红石门", "无红石1 已忽略" in msg, msg)
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -152,5 +192,6 @@ if __name__ == "__main__":
     test_map()
     test_portal_regions_and_merge()
     test_render_map_with_portal()
+    test_portal_redstone_filter()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

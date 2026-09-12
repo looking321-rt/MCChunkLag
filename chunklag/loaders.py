@@ -122,15 +122,22 @@ def portal_region(portal_chunks, radius=1):
     return out
 
 
-def portal_regions(portal_chunks):
+def portal_regions(portal_chunks, armed_chunks=None):
     """
     返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
 
     只保留最外层「整体层 7×7」（它已含 3×3 实体层与 5×5 红石层）——三层都画会
     糊成一片看不清；7×7 即传送门区块加载器的影响范围。
+
+    armed_chunks（带红石装置证据的门区块）给定时只保留**装置内任一块带红石**的装置：
+    纯装饰门没有红石装置、不会周期性送实体过门，也就不会常加载对面区块，不算常加载区。
+    armed_chunks=None 时不做红石过滤（兼容旧调用）。
     """
+    armed = set(armed_chunks) if armed_chunks is not None else None
     out = []
     for comp in cluster_chunks(portal_chunks):
+        if armed is not None and not (comp & armed):
+            continue
         cx, cz = cluster_center(comp)
         s = {(cx + dx, cz + dz) for dx in range(-3, 3 + 1)
              for dz in range(-3, 3 + 1)}
