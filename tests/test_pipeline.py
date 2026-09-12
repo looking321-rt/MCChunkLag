@@ -202,6 +202,47 @@ def test_portal_pair_filter():
     check("提示已忽略 2 个门区块", "未成对/无红石2 已忽略" in msg, msg)
 
 
+def test_top_excludes_zero():
+    """回归：TOP 榜只收**有卡顿因子**的区块（终端报告 / 汇总 / 地图红块共用同一份榜）。
+
+    2026-09-12 用户反馈「部分无卡顿区域被红色色块覆盖」：并集地图里非零区块只有 7 个，
+    旧逻辑把 13 个 0 分区块也顶进 TOP 20，前端照单给它们画了半透明红方块。
+    """
+    import json
+    import re
+    import types
+
+    import main as main_mod
+    from chunklag import analyze, mapdata
+    from chunklag.factors import FACTOR_WEIGHTS
+
+    zero = {k: 0 for k in FACTOR_WEIGHTS}
+    hot = dict(zero)
+    hot["entities_hostile"] = 2                       # 2×3 = 6 分
+
+    d = mapdata.build_map_data(
+        types.SimpleNamespace(chunk_entries={(0, 0): hot, (1, 0): zero, (2, 0): zero}),
+        top_n=20)
+    check("地图 TOP 只收非零区块", [t["x"] for t in d["top"]] == [0], str(d["top"]))
+
+    res = analyze.analyze(((0, 0, hot), (1, 0, zero)), world_name="t", data_version=1)
+    check("终端 TOP 榜只收非零区块",
+          [(c[0], c[1]) for c in res.top_chunks] == [(0, 0)], str(res.top_chunks))
+    check("全零存档 TOP 榜为空",
+          analyze.analyze(((0, 0, zero),), world_name="t", data_version=1).top_chunks == [], "")
+
+    # 端到端：portal_world 里全是门/红石方块（无实体、评分 0）→ 地图不该有任何红块
+    from make_fixture import PORTAL_WORLD, build_portal_world
+    build_portal_world()
+    pres = main_mod.analyze_world(PORTAL_WORLD, "0")[0][2]
+    out = os.path.join(ROOT, "tests", "map_topmark_test.html")
+    main_mod.render_map_for(PORTAL_WORLD, pres, out, simdist=2,
+                            player=(8.0, 64.0, 8.0, "minecraft:overworld"), top_n=20)
+    txt = open(out, encoding="utf-8").read()
+    m = re.search(r'<script id="mapdata" type="application/json">(.*?)</script>', txt, re.S)
+    check("零分存档地图不带红块数据", json.loads(m.group(1))["top"] == [], "")
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -213,5 +254,6 @@ if __name__ == "__main__":
     test_portal_regions_and_merge()
     test_render_map_with_portal()
     test_portal_pair_filter()
+    test_top_excludes_zero()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

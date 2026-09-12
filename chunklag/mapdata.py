@@ -37,7 +37,11 @@ def build_map_data(result, top_n=20):
     q50 = scores[len(scores) // 2] if scores else 0
     q90 = scores[int(len(scores) * 0.9)] if scores else 999
 
-    ranked = sorted(entries.items(), key=lambda kv: chunk_score(kv[1]), reverse=True)
+    # TOP 榜只收有卡顿因子的区块：0 分区块上榜会被前端画成红块，
+    # 看起来像"无卡顿区域被红色色块覆盖"（2026-09-12 用户反馈；并集地图里非零区块往往
+    # 少于 top_n，旧逻辑会把一堆 0 分区块顶进榜）。
+    ranked = [(k, v) for k, v in entries.items() if chunk_score(v) > 0]
+    ranked.sort(key=lambda kv: chunk_score(kv[1]), reverse=True)
     top = [{"x": x, "z": z, "s": chunk_score(c)} for (x, z), c in ranked[:top_n]]
 
     return {"bounds": bounds, "q50": q50, "q90": q90,

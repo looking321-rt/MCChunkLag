@@ -227,11 +227,13 @@ function render(){
         ctx.strokeRect(x0,y0,w,h);
       }
     }
-    // TOP 红块
+    // TOP 红块（以区块为中心：尺寸下限 3px 在缩小视图下会大于一个区块，
+    // 左对齐会单侧溢出盖住右/下邻居，看着像"红块盖到无卡顿区域"）
     for(const t of DATA.top){
       if(selected && t.x===selected.x && t.z===selected.z) continue;
+      const msz=Math.max(scale,3), moff=(msz-scale)/2;
       ctx.fillStyle='rgba(255,60,60,.5)';
-      ctx.fillRect(sx(t.x), sy(t.z), Math.max(scale,3), Math.max(scale,3));
+      ctx.fillRect(sx(t.x)-moff, sy(t.z)-moff, msz, msz);
     }
     // 玩家位置标记
     if(DATA.player){
