@@ -8,6 +8,7 @@
 import os
 import shutil
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -295,6 +296,36 @@ def test_errors_and_edge_cases():
         check("目录里没有存档 → ScanError", "没有找到存档" in raised2, raised2)
 
 
+class _MsgBoxStub:
+    """
+    替掉 tkinter.messagebox：测试里弹出的模态框**没人点确定**，会把进程永久挂住
+    （实测：一次跑挂 240s、一次退出码 1）。真机上是人来点，测试里必须换成记录器。
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def _rec(self, kind, *args, **_kw):
+        self.calls.append((kind, args[0] if args else ""))
+        return True
+
+    def showinfo(self, *a, **k):
+        return self._rec("info", *a, **k)
+
+    def showwarning(self, *a, **k):
+        return self._rec("warning", *a, **k)
+
+    def showerror(self, *a, **k):
+        return self._rec("error", *a, **k)
+
+    def askyesno(self, *a, **k):
+        return self._rec("askyesno", *a, **k)
+
+    @property
+    def errors(self):
+        return [c for c in self.calls if c[0] == "error"]
+
+
 def test_gui_helpers():
     from chunklag import gui
     check("fmt_size 用 MB/GB", gui.fmt_size(3 * 1048576) == "3.0 MB", gui.fmt_size(3 * 1048576))
@@ -330,8 +361,11 @@ def test_gui_smoke():
 
     from chunklag import gui
     old_cfg = gui.CONFIG_PATH
+    old_mb = gui.messagebox
+    stub = _MsgBoxStub()
     with TempDir("gui") as tmp:
         gui.CONFIG_PATH = os.path.join(tmp, "cfg.json")
+        gui.messagebox = stub
         try:
             root.withdraw()
             win = gui.ScanGui(root, initial_path=FAKE_WORLD)
@@ -369,10 +403,100 @@ def test_gui_smoke():
             win._set_running(False)
             win._save_cfg()
             check("配置写下来了", os.path.exists(gui.CONFIG_PATH), gui.CONFIG_PATH)
-            win._closing = True
+            for i in range(7):                    # 常用位置：去重 + 上限 5
+                win._remember_root(os.path.join(tmp, "root%d" % i))
+            roots = list(win.cfg["scan_roots"])
+            check("只记住最近 5 个位置", roots and len(roots) == 5, str(roots))
+            check("最新的排最前", roots[0] == os.path.normpath(os.path.join(tmp, "root6")), roots[0])
+            win._remember_root(roots[2])
+            check("重复位置提到最前而不重复",
+                  len(win.cfg["scan_roots"]) == 5 and win.cfg["scan_roots"][0] == roots[2]
+                  and win.cfg["scan_roots"].count(roots[2]) == 1, str(win.cfg["scan_roots"]))
+            check("全程没弹错误框", not stub.errors, str(stub.errors))
+            win._stop_pump()          # 关窗前停定时器（与真机 _on_close 一致）
             root.destroy()
         finally:
             gui.CONFIG_PATH = old_cfg
+            gui.messagebox = old_mb
+
+
+def test_gui_end_to_end():
+    """
+    GUI ↔ 引擎真实端到端：点「开始扫描」→ 工作线程跑完 → 结果表/输出文件都对。
+
+    冒烟测试只喂假事件，这条才能抓到"线程 / 队列 / 状态流转"这类真问题。
+    """
+    try:
+        import tkinter as tk
+    except ImportError as exc:
+        skip("GUI 端到端", "没有 tkinter：%s" % exc)
+        return
+    try:
+        root = tk.Tk()
+    except Exception as exc:
+        skip("GUI 端到端", "无法创建窗口：%s" % exc)
+        return
+
+    from chunklag import gui
+    old_cfg = gui.CONFIG_PATH
+    old_mb = gui.messagebox
+    stub = _MsgBoxStub()
+    with TempDir("gui_e2e") as tmp:
+        gui.CONFIG_PATH = os.path.join(tmp, "cfg.json")
+        gui.messagebox = stub
+        try:
+            saves = make_saves(tmp)
+            out = os.path.join(tmp, "out")
+            root.withdraw()
+            win = gui.ScanGui(root, initial_path=saves)
+            win.var_out.set(out)
+            win.var_auto.set(False)          # 别真去开浏览器
+            win.var_dim.set("主世界")
+            win._start()
+            check("点开始后进入运行态", str(win.btn_start["state"]) == "disabled", "")
+
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                root.update()               # 让 Tk 跑 after 回调（_pump 在里头）
+                if win.worker is None and win.results:
+                    break
+                time.sleep(0.02)
+
+            check("后台线程跑完并回收", win.worker is None, "仍在跑（超时）")
+            ok = [r for r in win.results if not r.skipped]
+            check("结果表行数 == 结果数", len(win.tree.get_children()) == len(win.results),
+                  "%d vs %d" % (len(win.tree.get_children()), len(win.results)))
+            check("至少一项扫出结果", len(ok) >= 1, str([(r.name, r.dim) for r in win.results]))
+            check("地图文件真的生成了", all(os.path.exists(r.map_path) for r in ok),
+                  str([r.map_path for r in ok]))
+            check("状态栏显示完成", "完成" in win.var_state.get(), win.var_state.get())
+            check("结果目录含维度子层",
+                  all(os.path.basename(os.path.dirname(r.map_path)) in ("主世界", "下界")
+                      for r in ok), str([r.out_dir for r in ok]))
+            check("日志里有汇总表头", "世界 | 维度" in win.log.get("1.0", "end"), "")
+            check("按钮回到可用态", str(win.btn_start["state"]) == "normal", "")
+            check("端到端没弹错误框", not stub.errors, str(stub.errors))
+
+            win._remember_root(saves)
+            win._save_cfg()
+            check("常用位置写进配置文件",
+                  gui.load_config().get("scan_roots") == [os.path.normpath(saves)],
+                  str(gui.load_config().get("scan_roots")))
+
+            # 跳过项不能炸（没有 map.html 时给提示而不是崩）
+            skip_rows = [r for r in win.results if r.skipped]
+            if skip_rows:
+                idx = win.results.index(skip_rows[0])
+                win.tree.selection_set(win.tree.get_children()[idx])
+                check("跳过项的 map_path 为空", skip_rows[0].map_path == "", "")
+                win._open_selected_map()     # 走一遍真实分支（对话框已被替身接住）
+                check("跳过项提示走的是 info 而非错误", not stub.errors, str(stub.errors))
+            win._stop_pump()
+            root.update()
+            root.destroy()
+        finally:
+            gui.CONFIG_PATH = old_cfg
+            gui.messagebox = old_mb
 
 
 if __name__ == "__main__":
@@ -385,5 +509,6 @@ if __name__ == "__main__":
     test_errors_and_edge_cases()
     test_gui_helpers()
     test_gui_smoke()
+    test_gui_end_to_end()
     print("\n===== 结果: %d 通过 / %d 失败 / %d 跳过 =====" % (PASS, FAIL, SKIP))
     sys.exit(1 if FAIL else 0)

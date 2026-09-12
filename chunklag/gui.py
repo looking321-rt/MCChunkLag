@@ -132,10 +132,11 @@ class ScanGui:
         self.results = []              # Treeview 行序 → WorldResult
         self.found = []                # 发现到的存档
         self._closing = False
+        self._after_id = None          # 界面刷新定时器（关窗前要取消，否则销毁后 Tk 报 invalid command name）
         self._build(initial_path or self.cfg.get("last_path", ""))
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.report_callback_exception = self._on_tk_error
-        self.root.after(100, self._pump)
+        self._after_id = self.root.after(100, self._pump)
 
     # ---------------- 构建界面 ----------------
     def _build(self, initial_path):
@@ -287,7 +288,9 @@ class ScanGui:
         path = filedialog.askdirectory(title="选择存档目录（可填 .minecraft / saves / 单个世界）",
                                        initialdir=self.var_path.get() or os.path.expanduser("~"))
         if path:
-            self.var_path.set(os.path.normpath(path))
+            path = os.path.normpath(path)
+            self.var_path.set(path)
+            self._remember_root(path)       # 记下来，下次不用再手输
             self._start_discover(path)      # 选完顺手找一下里面有哪些世界
 
     def _pick_out(self):
@@ -314,15 +317,28 @@ class ScanGui:
     def _discover(self):
         root = self.var_path.get().strip()
         if root and os.path.isdir(root):
+            self._remember_root(root)
             self._start_discover(root)
             return
+        # 路径框空着：先扫常见启动器位置，再补上**用户以前用过**的位置
+        # （本机玩家常把 MC 装在自选目录，光靠默认候选会一个都找不到）
         roots = [d for d in default_scan_dirs() if os.path.isdir(d)]
+        for r in self.cfg.get("scan_roots", []):
+            if os.path.isdir(r) and r not in roots:
+                roots.append(r)
         if not roots:
             messagebox.showinfo("没找到常见位置",
                                 "没探测到常见启动器的存档目录。\n"
                                 "请在路径框填 .minecraft 或 saves 目录后再点「查找存档」。")
             return
         self._start_discover_many(roots)
+
+    def _remember_root(self, path):
+        """记住用户用过的存档位置（上限 5 个），下次点「查找存档」直接扫它。"""
+        path = os.path.normpath(path)
+        roots = [r for r in self.cfg.get("scan_roots", []) if r != path]
+        roots.insert(0, path)
+        self.cfg["scan_roots"] = roots[:5]
 
     def _start_discover(self, root):
         self._start_discover_many([root])
@@ -445,7 +461,22 @@ class ScanGui:
                 self._handle(ev)
         except queue.Empty:
             pass
-        self.root.after(100, self._pump)
+        self._after_id = self.root.after(100, self._pump)
+
+    def _stop_pump(self):
+        """
+        停掉界面刷新定时器（关窗前必须调）。
+
+        不取消的话，窗口销毁后 Tk 仍会去执行排队的 after 回调，
+        往 stderr 吐 `invalid command name "..._pump"`（真机关窗时也看得到）。
+        """
+        self._closing = True
+        if self._after_id is not None:
+            try:
+                self.root.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
 
     def _handle(self, ev):
         kind = ev.get("kind")
@@ -550,7 +581,13 @@ class ScanGui:
             return
         idx = self.tree.index(sel[0])
         if 0 <= idx < len(self.results):
-            self._open_path(self.results[idx].map_path)
+            r = self.results[idx]
+            if not r.map_path:
+                # 被跳过的世界没有 map.html —— 说清楚为什么，而不是弹"文件不存在"
+                messagebox.showinfo("这一项没有地图",
+                                    "%s\n%s" % (r.name, r.skipped or "该项没有输出地图"))
+                return
+            self._open_path(r.map_path)
 
     # ---------------- 日志 ----------------
     def _log_line(self, text, warn=False):
@@ -589,7 +626,7 @@ class ScanGui:
             if self.job is not None:
                 self.job.cancel()
             self.worker.join(timeout=5)
-        self._closing = True
+        self._stop_pump()          # 先停定时器再销毁窗口
         self._save_cfg()
         self.root.destroy()
 
