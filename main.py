@@ -24,35 +24,83 @@ DIMENSIONS = {
 }
 
 
+def _dim_region_dir(world_dir, key):
+    """维度 key(0/-1/1) → region 目录路径。"""
+    sub, _name = DIMENSIONS.get(key, ("", "主世界"))
+    return os.path.join(world_dir, sub, "region") if sub else os.path.join(world_dir, "region")
+
+
 def find_region_dirs(world_dir, dim_sel):
-    """返回 [(region_path, dim_name)]。"""
+    """返回 [(region_path, dim_name, dim_key)]。"""
     result = []
     if dim_sel == "all":
         keys = ["0", "-1", "1"]
     else:
         keys = [dim_sel]
     for key in keys:
-        sub, name = DIMENSIONS.get(key, ("", "主世界"))
-        rdir = os.path.join(world_dir, sub, "region") if sub else os.path.join(world_dir, "region")
+        rdir = _dim_region_dir(world_dir, key)
         if os.path.isdir(rdir):
-            result.append((rdir, name))
+            result.append((rdir, DIMENSIONS.get(key, ("", "主世界"))[1], key))
     return result
 
 
+def _scan_portal_chunks(rdir):
+    """轻量扫描：只挑含地狱门的区块（不统计卡顿因子），供跨维度配对判定用。"""
+    portal, armed = set(), set()
+    for cx, cz, nbt_data in region.scan_region_dir(rdir):
+        if factors.has_portal(nbt_data):
+            portal.add((cx, cz))
+            if factors.has_redstone_kit(nbt_data):
+                armed.add((cx, cz))
+    return portal, armed
+
+
+def _resolve_portal_loaders(world_dir, portal_info, all_results):
+    """
+    跨维度成对判定（主世界 ↔ 下界）：两侧都有地狱门 + 红石装置才算常加载装置。
+
+    本维度扫到门时才去轻量补扫对面维度（没门就不用扫，省时间）。
+    末地等其它维度不参与地狱门常加载判定。
+    """
+    from chunklag import loaders
+
+    by_dim = {res.dimension_key: res for _rdir, _name, res in all_results}
+    for key, mate in (("0", "-1"), ("-1", "0")):
+        if mate in portal_info or key not in by_dim:
+            continue
+        portal, armed = portal_info.get(key, (set(), set()))
+        if not (portal & armed):
+            continue        # 本侧没有任何带红石的门装置 → 必然不成对，不必扫对面（省时间）
+        mate_dir = _dim_region_dir(world_dir, mate)
+        if os.path.isdir(mate_dir):
+            portal_info[mate] = _scan_portal_chunks(mate_dir)   # 无该维度 → 留空 = 不成对
+
+    for key, res in by_dim.items():
+        if key not in ("0", "-1"):
+            res.portal_loader_chunks = set()
+            continue
+        mate = "-1" if key == "0" else "0"
+        portal, armed = portal_info.get(key, (set(), set()))
+        m_portal, m_armed = portal_info.get(mate, (set(), set()))
+        res.portal_loader_chunks = loaders.portal_loaders(
+            portal, armed, m_portal, m_armed, key == "0")
+
+
 def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
-    """分析存档，返回 (AnalysisResult, 维度名)。dim_sel=-1/0/1/all。"""
+    """分析存档，返回 [(region_dir, 维度名, AnalysisResult)]。dim_sel=-1/0/1/all。"""
     world_name, data_version = leveldat.describe_world(world_dir)
     entity_part = EntityPartition(world_dir)  # 1.16+ 实体分区（无则忽略）
 
     all_results = []
-    for rdir, dim_name in find_region_dirs(world_dir, dim_sel):
+    portal_info = {}                     # dim key → (含门区块, 含门+红石区块)
+    for rdir, dim_name, key in find_region_dirs(world_dir, dim_sel):
         portal_chunks = set()
         portal_armed = set()
         def gen():
             n = 0
             for cx, cz, nbt_data in region.scan_region_dir(rdir):
                 # 真门判据：区块含 nether_portal 方块（黑曜石/红石太常见，会大量误报）；
-                # 只有带红石装置的门才会周期性把实体送过门、常加载对面区块。
+                # 是否算常加载器另由 _resolve_portal_loaders 跨维度成对判定。
                 if factors.has_portal(nbt_data):
                     portal_chunks.add((cx, cz))
                     if factors.has_redstone_kit(nbt_data):
@@ -68,7 +116,11 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
         res.portal_chunks = portal_chunks
         res.portal_armed_chunks = portal_armed
         res.dimension = dim_name
+        res.dimension_key = key
+        portal_info[key] = (portal_chunks, portal_armed)
         all_results.append((rdir, dim_name, res))
+
+    _resolve_portal_loaders(world_dir, portal_info, all_results)
     return all_results
 
 
@@ -86,16 +138,15 @@ def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10):
     if player:
         from chunklag import loaders
         regions = loaders.collect_regions(world_dir)
-        portal = getattr(res, "portal_chunks", None)
+        all_portal = getattr(res, "portal_chunks", None) or set()
+        portal = getattr(res, "portal_loader_chunks", None) or set()
+        # 每装置一个 7×7 框；重叠框合并成一个外接框。只有两侧成对的门装置才画
+        devs = loaders.merge_region_boxes(loaders.portal_regions(portal)) if portal else []
+        regions.extend(devs)
         portal_note = ""
-        if portal:
-            armed = getattr(res, "portal_armed_chunks", None)
-            # 每装置一个 7×7 框；重叠框合并成一个外接框。纯门（无红石装置）不算常加载器，先过滤
-            devs = loaders.merge_region_boxes(loaders.portal_regions(portal, armed))
-            regions.extend(devs)
-            n_armed = len(armed or ())
-            portal_note = (" | 地狱门: 门区块%d → 常加载框%d（带红石）; 无红石%d 已忽略"
-                           % (len(portal), len(devs), len(portal) - n_armed))
+        if all_portal:
+            portal_note = (" | 地狱门: 门区块%d → 常加载框%d; 未成对/无红石%d 已忽略"
+                           % (len(all_portal), len(devs), len(all_portal) - len(portal)))
         data = mapdata_mod.build_union_map(res, player, simdist, regions, top_n=top_n)
         msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s%s"
                % (int(player[0] // 16), int(player[2] // 16), simdist,

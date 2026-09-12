@@ -131,7 +131,7 @@ def test_render_map_with_portal():
     """
     import main as main_mod
     res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
-    res.portal_chunks = {(0, 0), (1, 0)}  # 模拟识别到传送门所在区块
+    res.portal_loader_chunks = {(0, 0), (1, 0)}  # 模拟识别到成对的地狱门装置
     out = os.path.join(ROOT, "tests", "map_portal_test.html")
     # 传 player 才走「玩家模拟区 ∪ 常加载区」分支（合成存档 level.dat 里没有玩家位置）
     msg = main_mod.render_map_for(FAKE_WORLD, res, out, simdist=2,
@@ -142,11 +142,12 @@ def test_render_map_with_portal():
     check("常加载区已并入地图数据", "regions" in txt, "")
 
 
-def test_portal_redstone_filter():
-    """回归：纯地狱门（0 红石）不算传送门常加载装置（2026-09-12 用户反馈）。
+def test_portal_pair_filter():
+    """回归：只有主世界/下界**两侧**都有地狱门+红石装置，才算常加载装置。
 
-    生电存档实测 9 个门区块里 7 个是纯装饰门（黑曜石门、0 红石），
-    旧判据只看 nether_portal 方块，把它们全画成常加载区。
+    2026-09-12 用户拍板：地狱门常加载靠实体在两个维度之间循环，单侧识别到的一律不标注
+    （纯门与普通方块无异）。生电存档实测：主世界 4 个门区块全无红石、下界装置带红石但
+    主世界侧无红石装置 → 整个存档不该出现门常加载框（旧判据只看 nether_portal 方块）。
     """
     import json
     import re
@@ -157,29 +158,41 @@ def test_portal_redstone_filter():
 
     build_portal_world()
     res = main_mod.analyze_world(PORTAL_WORLD, "0")[0][2]
-    check("扫到 2 个门区块", res.portal_chunks == {(0, 0), (2, 0)}, str(sorted(res.portal_chunks)))
-    check("只把带红石的门区块标为 armed", res.portal_armed_chunks == {(2, 0)},
-          str(sorted(res.portal_armed_chunks)))
+    check("主世界扫到 3 个门区块",
+          res.portal_chunks == {(0, 0), (2, 0), (28, 0)}, str(sorted(res.portal_chunks)))
+    check("主世界只把成对的 (2,0) 算常加载装置",
+          res.portal_loader_chunks == {(2, 0)}, str(sorted(res.portal_loader_chunks)))
 
-    check("纯门装置不出常加载区", loaders.portal_regions({(0, 0)}, set()) == [], "")
-    kept = loaders.portal_regions({(0, 0), (1, 0)}, {(1, 0)})
-    check("装置内任一块带红石即保留整装置",
-          len(kept) == 1 and len(kept[0][2]) == 49, str(kept))
-    only = loaders.portal_regions({(0, 0), (50, 50)}, {(50, 50)})
-    check("不相邻装置各自判定", len(only) == 1 and (50, 50) in only[0][2], str(only))
+    nres = main_mod.analyze_world(PORTAL_WORLD, "-1")[0][2]
+    check("下界配对装置算常加载",
+          nres.portal_loader_chunks == {(0, 0)}, str(sorted(nres.portal_loader_chunks)))
+
+    check("主世界→下界 区块 ÷8",
+          loaders.to_mate_chunks({(506, 1793)}, True) == {(63, 224)}, "")
+    check("下界→主世界 区块 ×8（1 块扩成 8×8）",
+          loaders.to_mate_chunks({(0, 0)}, False) == {(dx, dz) for dx in range(8) for dz in range(8)}, "")
+
+    check("本侧无红石 → 不通过",
+          loaders.portal_loaders({(0, 0)}, set(), {(0, 0)}, {(0, 0)}, True) == set(), "")
+    check("对面没门 → 不通过",
+          loaders.portal_loaders({(0, 0)}, {(0, 0)}, set(), set(), True) == set(), "")
+    check("对面有门但无红石 → 不通过",
+          loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(0, 0)}, set(), True) == set(), "")
+    check("两侧齐 → 通过",
+          loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(0, 0)}, {(0, 0)}, True) == {(0, 0)}, "")
 
     out = os.path.join(ROOT, "tests", "map_portal_filter_test.html")
     msg = main_mod.render_map_for(PORTAL_WORLD, res, out, simdist=2,
                                   player=(8.0, 64.0, 8.0, "minecraft:overworld"), top_n=5)
-    check("纯门存档渲染不崩", os.path.exists(out), msg)
+    check("纯门/单侧门存档渲染不崩", os.path.exists(out), msg)
     txt = open(out, encoding="utf-8").read()
     m = re.search(r'<script id="mapdata" type="application/json">(.*?)</script>', txt, re.S)
     regions = json.loads(m.group(1))["regions"] if m else []
     portal_regs = [r for r in regions if r["type"] == "portal"]
     check("地图里只剩 1 个门常加载框", len(portal_regs) == 1, str(len(portal_regs)))
-    check("门常加载框覆盖带红石装置",
+    check("框覆盖成对装置 (2,0)",
           bool(portal_regs) and [2, 0] in portal_regs[0]["chunks"], str(portal_regs))
-    check("提示已忽略无红石门", "无红石1 已忽略" in msg, msg)
+    check("提示已忽略 2 个门区块", "未成对/无红石2 已忽略" in msg, msg)
 
 
 if __name__ == "__main__":
@@ -192,6 +205,6 @@ if __name__ == "__main__":
     test_map()
     test_portal_regions_and_merge()
     test_render_map_with_portal()
-    test_portal_redstone_filter()
+    test_portal_pair_filter()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

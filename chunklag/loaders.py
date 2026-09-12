@@ -122,26 +122,62 @@ def portal_region(portal_chunks, radius=1):
     return out
 
 
-def portal_regions(portal_chunks, armed_chunks=None):
+def portal_regions(portal_chunks):
     """
     返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
 
     只保留最外层「整体层 7×7」（它已含 3×3 实体层与 5×5 红石层）——三层都画会
     糊成一片看不清；7×7 即传送门区块加载器的影响范围。
 
-    armed_chunks（带红石装置证据的门区块）给定时只保留**装置内任一块带红石**的装置：
-    纯装饰门没有红石装置、不会周期性送实体过门，也就不会常加载对面区块，不算常加载区。
-    armed_chunks=None 时不做红石过滤（兼容旧调用）。
+    portal_chunks 应已由 `portal_loaders` 做过成对判定，这里只负责画框。
     """
-    armed = set(armed_chunks) if armed_chunks is not None else None
     out = []
     for comp in cluster_chunks(portal_chunks):
-        if armed is not None and not (comp & armed):
-            continue
         cx, cz = cluster_center(comp)
         s = {(cx + dx, cz + dz) for dx in range(-3, 3 + 1)
              for dz in range(-3, 3 + 1)}
         out.append(("portal", "传送门常加载区", s))
+    return out
+
+
+def to_mate_chunks(chunks, from_overworld):
+    """
+    把一侧维度的区块集合映射到对面维度：主世界→下界 1/8（÷8），下界→主世界 ×8。
+    （主世界 1 区块 16 方块 = 下界 2 方块，故 8 个主世界区块对应 1 个下界区块）
+    """
+    if from_overworld:
+        return {(cx // 8, cz // 8) for cx, cz in chunks}
+    return {(8 * cx + dx, 8 * cz + dz)
+            for cx, cz in chunks for dx in range(8) for dz in range(8)}
+
+
+def portal_loaders(portal_chunks, armed_chunks, mate_portal, mate_armed, is_overworld):
+    """
+    返回**算「地狱门常加载装置」的门区块集合**（装置级判定，2026-09-12 用户拍板）。
+
+    判据：地狱门常加载靠实体在主世界/下界之间循环，所以必须
+    **两侧都装了地狱门、且两侧都有红石装置**；只在一侧识别到的一律不标注
+    （单个地狱门与普通方块无异，不对面加载）。
+
+    - portal_chunks / armed_chunks：本维度 含门 / 含门+红石 的区块
+    - mate_portal / mate_armed：对面维度（主世界↔下界）的两类区块
+    - is_overworld：本维度是否主世界（决定坐标缩放方向）
+
+    装置级语义：先聚类成装置，整装置一起通过/一起否掉；对面只要有一个配对装置
+    带红石，本装置就算加载器。
+    """
+    armed = set(armed_chunks)
+    mate_armed = set(mate_armed)
+    mate_devices = cluster_chunks(mate_portal)
+    out = set()
+    for comp in cluster_chunks(portal_chunks):
+        if not (comp & armed):
+            continue                      # 本侧无红石装置 → 不是实体循环加载器
+        mapped = to_mate_chunks(comp, is_overworld)
+        for m_comp in mate_devices:
+            if (mapped & m_comp) and (m_comp & mate_armed):
+                out |= comp               # 对面有配对门装置且有红石 → 整个装置算加载器
+                break
     return out
 
 

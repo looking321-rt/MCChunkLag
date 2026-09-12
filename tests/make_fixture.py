@@ -193,11 +193,14 @@ def _chunk_nbt_blocks(x, z, block_names, block_entity_ids=()):
 
 def build_portal_world():
     """
-    合成「门判据」测试世界（两个互不相邻的装置）：
-      (0,0) 纯装饰门（黑曜石+传送门方块，0 红石）→ 不算常加载装置
-      (2,0) 门 + 红石装置（红石粉/中继器）      → 算常加载装置
+    合成「门判据」测试世界（主世界 3 个装置 + 下界 1 个装置，覆盖跨维度成对判据）：
+      主世界 (0,0)  纯装饰门（黑曜石+传送门方块，0 红石）  → 本侧无红石 → 不算
+      主世界 (2,0)  门+红石，下界 (0,0) 有配对门+红石      → 两侧成对 → 算常加载装置
+      主世界 (28,0) 门+红石，但下界 (3,0) 没有门           → 只单侧识别 → 不算
+      下界   (0,0)  门+红石，对面主世界装置带红石          → 算常加载装置
     """
-    os.makedirs(os.path.join(PORTAL_WORLD, "region"), exist_ok=True)
+    for sub in ("region", os.path.join("DIM-1", "region")):
+        os.makedirs(os.path.join(PORTAL_WORLD, sub), exist_ok=True)
     level = enc_compound(C({
         "Data": C({
             "LevelName": S("门判据测试"),
@@ -208,13 +211,18 @@ def build_portal_world():
     with open(os.path.join(PORTAL_WORLD, "level.dat"), "wb") as f:
         f.write(gzip.compress(level))
 
-    chunks = [
-        (0, 0, _chunk_nbt_blocks(0, 0, ["minecraft:obsidian", "minecraft:nether_portal"])),
-        (2, 0, _chunk_nbt_blocks(2, 0, ["minecraft:obsidian", "minecraft:nether_portal",
-                                        "minecraft:redstone_wire", "minecraft:repeater"])),
+    pure = ["minecraft:obsidian", "minecraft:nether_portal"]
+    wired = pure + ["minecraft:redstone_wire", "minecraft:repeater"]
+    overworld = [
+        (0, 0, _chunk_nbt_blocks(0, 0, pure)),
+        (2, 0, _chunk_nbt_blocks(2, 0, wired)),
+        (28, 0, _chunk_nbt_blocks(28, 0, wired)),
     ]
+    nether = [(0, 0, _chunk_nbt_blocks(0, 0, wired))]
     with open(os.path.join(PORTAL_WORLD, "region", "r.0.0.mca"), "wb") as f:
-        f.write(_build_region(chunks))
+        f.write(_build_region(overworld))
+    with open(os.path.join(PORTAL_WORLD, "DIM-1", "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region(nether))
     print("已生成门判据测试世界 -> %s" % PORTAL_WORLD)
 
 
