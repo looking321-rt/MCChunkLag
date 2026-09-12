@@ -10,6 +10,7 @@ venv/
 tests/fake_world/
 tests/portal_world/
 tests/new_world/
+tests/mixed_world/
 tests/out.html
 tests/report_*.txt
 tests/report_*.html

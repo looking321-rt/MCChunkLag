@@ -315,7 +315,49 @@ def build_new_layout_world():
     print("已生成新版布局测试世界 -> %s" % NEW_WORLD)
 
 
+MIXED_WORLD = os.path.join(HERE, "mixed_world")
+
+
+def build_mixed_layout_world():
+    """
+    合成「混合布局」测试世界（1.20 整合包 + 自定义维度 mod 的真实形态）：
+
+      level.dat（旧版格式：SpawnX/SpawnZ）
+      region/r.0.0.mca                                        主世界（旧布局）
+      DIM-1/region/r.0.0.mca                                  下界（旧布局）
+      dimensions/twilightforest/twilight_forest/region/...    自定义维度（mod）
+
+    2026-09-12 踩坑：早期实现"有 dimensions/ 就整个按新布局解析"，导致这种存档
+    只剩自定义维度、主世界被漏掉 → CLI 报"没有 region 区块数据"（001 存档实测）。
+    """
+    tf = os.path.join(MIXED_WORLD, "dimensions", "twilightforest", "twilight_forest")
+    for d in (os.path.join(MIXED_WORLD, "region"), os.path.join(MIXED_WORLD, "DIM-1", "region"),
+              os.path.join(tf, "region")):
+        os.makedirs(d, exist_ok=True)
+
+    level = enc_compound(C({
+        "Data": C({
+            "LevelName": S("混合布局测试"),
+            "DataVersion": I(3465),
+            "Version": C({"Id": I(3465), "Name": S("1.20.1")}),
+            "SpawnX": I(0), "SpawnY": I(64), "SpawnZ": I(0),
+        }),
+    }))
+    with open(os.path.join(MIXED_WORLD, "level.dat"), "wb") as f:
+        f.write(gzip.compress(level))
+
+    blocks = ["minecraft:obsidian", "minecraft:nether_portal"]
+    with open(os.path.join(MIXED_WORLD, "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _chunk_nbt_blocks(0, 0, blocks))]))
+    with open(os.path.join(MIXED_WORLD, "DIM-1", "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _chunk_nbt_blocks(0, 0, blocks))]))
+    with open(os.path.join(tf, "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _chunk_nbt_blocks(0, 0, blocks))]))
+    print("已生成混合布局测试世界 -> %s" % MIXED_WORLD)
+
+
 if __name__ == "__main__":
     build()
     build_portal_world()
     build_new_layout_world()
+    build_mixed_layout_world()

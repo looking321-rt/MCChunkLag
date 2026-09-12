@@ -19,10 +19,11 @@ from chunklag.entitypart import EntityPartition
 
 def find_region_dirs(world_dir, dim_sel):
     """
-    返回 [(region_path, dim_name, dim_key, dim_dir)]。
+    返回 [(region_path, dim_name, dim_key, dim_dir, dim_id)]。
 
     维度目录由 layout.dimension_dirs 解析：新布局（26.x 起）dimensions/<ns>/<dim>/、
-    旧布局 region/ + DIM-1 + DIM1 都支持；dim_sel 仍是 0/-1/1/all。
+    旧布局 region/ + DIM-1 + DIM1，以及**两者混存**（1.20 整合包 + 自定义维度 mod）都支持；
+    dim_sel 仍是 0/-1/1/all（自定义维度只在 all 时分析）。
     """
     result = []
     for dim_id, dim_dir in layout.dimension_dirs(world_dir):
@@ -30,7 +31,7 @@ def find_region_dirs(world_dir, dim_sel):
         if dim_sel != "all" and key != dim_sel:
             continue
         result.append((os.path.join(dim_dir, "region"), layout.dim_label(dim_id),
-                       key, dim_dir))
+                       key, dim_dir, dim_id))
     return result
 
 
@@ -61,24 +62,26 @@ def _resolve_portal_loaders(world_dir, portal_info, all_results):
     本维度扫到带证据的门装置时才去轻量补扫对面维度（否则不必扫，省时间）。
     末地等其它维度不参与地狱门常加载判定。
     """
-    by_dim = {res.dimension_key: res for _rdir, _name, res, _d in all_results}
+    by_dim = {res.dimension_id: res for _rdir, _name, res, _d in all_results}
     for key, mate in (("0", "-1"), ("-1", "0")):
-        if mate in portal_info or key not in by_dim:
+        dim_id, mate_id = layout.DIM_SEL_TO_ID[key], layout.DIM_SEL_TO_ID[mate]
+        if mate_id in portal_info or dim_id not in by_dim:
             continue
-        portal, armed = portal_info.get(key, (set(), set()))
+        portal, armed = portal_info.get(dim_id, (set(), set()))
         if not (portal & armed):
             continue        # 本侧没有任何带证据的门装置 → 必然不成对，不必扫对面（省时间）
-        mate_dir = layout.dim_dir(world_dir, layout.DIM_SEL_TO_ID[mate])
+        mate_dir = layout.dim_dir(world_dir, mate_id)
         if mate_dir:
-            portal_info[mate] = _scan_dimension(mate_dir)   # 无该维度 → 留空 = 不成对
+            portal_info[mate_id] = _scan_dimension(mate_dir)   # 无该维度 → 留空 = 不成对
 
-    for key, res in by_dim.items():
+    for dim_id, res in by_dim.items():
+        key = layout.dim_key(dim_id)
         if key not in ("0", "-1"):
-            res.portal_loader_chunks = set()
+            res.portal_loader_chunks = set()      # 自定义维度不参与地狱门成对判定
             continue
-        mate = "-1" if key == "0" else "0"
-        portal, armed = portal_info.get(key, (set(), set()))
-        m_portal, m_armed = portal_info.get(mate, (set(), set()))
+        mate_id = layout.DIM_SEL_TO_ID["-1" if key == "0" else "0"]
+        portal, armed = portal_info.get(dim_id, (set(), set()))
+        m_portal, m_armed = portal_info.get(mate_id, (set(), set()))
         res.portal_loader_chunks = loaders.portal_loaders(
             portal, armed, m_portal, m_armed, key == "0")
 
@@ -89,8 +92,8 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
     pearls = loaders.read_ender_pearls(world_dir)      # 末影珍珠加载器（存在玩家数据里）
 
     all_results = []
-    portal_info = {}                     # dim key → (含门区块, 带加载器证据区块)
-    for rdir, dim_name, key, dim_dir in find_region_dirs(world_dir, dim_sel):
+    portal_info = {}                     # dim_id → (含门区块, 带加载器证据区块)
+    for rdir, dim_name, key, dim_dir, dim_id in find_region_dirs(world_dir, dim_sel):
         entity_part = EntityPartition(dim_dir)         # 1.16+ 实体分区（无则忽略）
         portal_chunks, redstone_chunks, rail_chunks = set(), set(), set()
         def gen():
@@ -119,10 +122,11 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0):
         res.portal_armed_chunks = portal_armed
         res.portal_rail_chunks = rail_chunks
         res.minecart_chunks = minecart_chunks
-        res.pearls = [p for p in pearls if layout.dim_key(p["dim"]) == key]
+        res.pearls = [p for p in pearls if p["dim"] == dim_id]
         res.dimension = dim_name
         res.dimension_key = key
-        portal_info[key] = (portal_chunks, portal_armed)
+        res.dimension_id = dim_id
+        portal_info[dim_id] = (portal_chunks, portal_armed)
         all_results.append((rdir, dim_name, res, dim_dir))
 
     _resolve_portal_loaders(world_dir, portal_info, all_results)

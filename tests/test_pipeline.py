@@ -316,6 +316,38 @@ def test_new_layout_and_modern_loaders():
     check("提示含珍珠数量", "珍珠: 1 颗" in msg, msg)
 
 
+def test_mixed_layout_world():
+    """混合布局回归：旧布局 region/ + DIM-1/ 与 dimensions/<mod>/<dim>/ 混存时**都要收**。
+
+    2026-09-12 用户报「001 存档扫不出来（跳过：没有 region 区块数据）」：那份 1.20.1 整合包
+    存档装了自定义维度 mod（暮色森林），于是同时存在 dimensions/ 与旧布局的 region/；
+    早期实现"有 dimensions/ 就全按新布局"→ 只剩自定义维度、主世界被漏 → 结果为空。
+    """
+    import main as main_mod
+    from chunklag import layout
+    from make_fixture import MIXED_WORLD, build_mixed_layout_world
+
+    build_mixed_layout_world()
+    dims = [d for d, _p in layout.dimension_dirs(MIXED_WORLD)]
+    check("混合布局收齐 3 个维度",
+          dims == ["minecraft:overworld", "minecraft:the_nether",
+                   "twilightforest:twilight_forest"], str(dims))
+
+    results = main_mod.analyze_world(MIXED_WORLD, "all")
+    check("全维度分析出 3 个结果", len(results) == 3, str(len(results)))
+    check("results[0] 是主世界（不是自定义维度）",
+          results[0][2].dimension_id == "minecraft:overworld", results[0][2].dimension_id)
+    custom = [r[2] for r in results if r[2].dimension_id.startswith("twilightforest")]
+    check("自定义维度也被分析", len(custom) == 1, "")
+    check("自定义维度 key 为 None", custom and custom[0].dimension_key is None, "")
+    check("自定义维度不参与地狱门成对判定",
+          bool(custom) and custom[0].portal_loader_chunks == set(), "")
+
+    only_ow = main_mod.analyze_world(MIXED_WORLD, "0")
+    check("--dim 0 只出主世界", len(only_ow) == 1 and only_ow[0][2].dimension_id == "minecraft:overworld",
+          str(len(only_ow)))
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -329,5 +361,6 @@ if __name__ == "__main__":
     test_portal_pair_filter()
     test_top_excludes_zero()
     test_new_layout_and_modern_loaders()
+    test_mixed_layout_world()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

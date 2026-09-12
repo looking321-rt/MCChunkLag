@@ -37,14 +37,27 @@ _LEGACY_SUBDIRS = {
     "DIM1": "minecraft:the_end",
 }
 
+# 标准维度排序权重（主世界/下界/末地优先，自定义维度（如 twilightforest:twilight_forest）排后面）
+_DIM_ORDER = {"minecraft:overworld": 0, "minecraft:the_nether": 1, "minecraft:the_end": 2}
+
 
 def dimension_dirs(world_dir):
     """
     返回 [(dim_id, 维度目录)]，只含**确实存在 region/** 的维度。
 
-    只要存在 dimensions/ 就按新布局解析（26.x），否则回退旧布局的 region/ + DIM-1 + DIM1。
+    兼容三种情况（**可混存**）：
+      · 新布局：`<world>/dimensions/<namespace>/<dim>/{region,…}`
+      · 旧布局：`<world>/region`（主世界）、`<world>/DIM-1/region`、`<world>/DIM1/region`
+      · **混存**：1.20 时代装了自定义维度 mod（如暮色森林）会在 `<world>/dimensions/`
+        下开维度目录，而主世界仍在 `<world>/region` —— 两种必须都收！
+        （2026-09-12 踩坑：早期写成"有 dimensions/ 就全按新布局"，导致「001」整合包存档
+        只剩暮色森林维度、主世界被漏掉 → CLI 报"没有 region 区块数据"）
+
+    顺序：主世界 → 下界 → 末地 → 其它自定义维度（保证批量扫描 results[0] 是主世界）。
     """
     out = []
+    seen = set()
+
     base = os.path.join(world_dir, "dimensions")
     if os.path.isdir(base):
         for ns in sorted(os.listdir(base)):
@@ -53,14 +66,22 @@ def dimension_dirs(world_dir):
                 continue
             for dim in sorted(os.listdir(nsp)):
                 d = os.path.join(nsp, dim)
-                if os.path.isdir(os.path.join(d, "region")):
-                    out.append(("%s:%s" % (ns, dim), d))
-        return out
+                if not os.path.isdir(os.path.join(d, "region")):
+                    continue
+                dim_id = "%s:%s" % (ns, dim)
+                if dim_id not in seen:
+                    seen.add(dim_id)
+                    out.append((dim_id, d))
 
     for sub, dim_id in _LEGACY_SUBDIRS.items():
+        if dim_id in seen:
+            continue
         d = os.path.join(world_dir, sub) if sub else world_dir
         if os.path.isdir(os.path.join(d, "region")):
+            seen.add(dim_id)
             out.append((dim_id, d))
+
+    out.sort(key=lambda it: (_DIM_ORDER.get(it[0], 9), it[0]))
     return out
 
 
