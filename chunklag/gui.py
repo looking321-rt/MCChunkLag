@@ -66,10 +66,15 @@ def fmt_seconds(seconds):
     return "%d分%02ds" % (int(s) // 60, int(s) % 60)
 
 
-def find_worlds(root, max_depth=6):
+def find_worlds(root, max_depth=8):
     """
     列出 root 下的存档世界：名称 / 路径 / 版本 / 最后修改时间，按最近游玩倒序。
-    深度放宽到 6 —— 兼容 `Minecraft/hmcl/.minecraft/versions/<版本>/saves/<世界>` 这类深层嵌套。
+
+    深度放宽到 8：启动器嵌套层数不一 —— hmcl 是
+    `Minecraft/hmcl/.minecraft/versions/<版本>/saves/<世界>`（6 层），
+    PCL 整合包是 `Minecraft/PCL/整合包/<包名>/.minecraft/versions/<版本>/saves/<世界>`（8 层）。
+    实测扫 `D:\\常用软件\\Minecraft`（两大启动器、25 个世界）0.8s；
+    重目录（assets/libraries/resourcepacks/mods 等）由 scanjob.SKIP_DIRS 剪掉，遍历不会失控。
     """
     out = []
     for wdir in discover_worlds(root, max_depth=max_depth):

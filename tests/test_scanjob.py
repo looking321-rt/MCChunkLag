@@ -109,8 +109,25 @@ def test_discover_and_plan():
         nested = os.path.join(nested_root, "versions", "1.20.1", "saves", "深层世界")
         os.makedirs(os.path.dirname(nested))
         shutil.copytree(FAKE_WORLD, nested)
-        check("深度 4 覆盖 versions/<版本>/saves/<世界>",
+        check("默认深度覆盖 versions/<版本>/saves/<世界>",
               len(discover_worlds(nested_root)) == 1, str(discover_worlds(nested_root)))
+
+        # PCL 整合包式深嵌套（8 层）——「发现」与「扫描」必须同一口径，否则列表里有却扫不到
+        deep = os.path.join(tmp, "mc2", "PCL", "整合包", "某整合包", ".minecraft",
+                            "versions", "1.18.2-Forge", "saves", "深层世界")
+        os.makedirs(os.path.dirname(deep))
+        shutil.copytree(FAKE_WORLD, deep)
+        check("默认深度覆盖 PCL 整合包 8 层嵌套",
+              discover_worlds(os.path.join(tmp, "mc2")) == [deep],
+              str(discover_worlds(os.path.join(tmp, "mc2"))))
+
+        # 重目录（mods 等）不进去找 —— 里面不可能有世界，遍历它们是纯浪费
+        fake = os.path.join(tmp, "mc2", "PCL", "整合包", "某整合包", ".minecraft", "mods", "伪世界")
+        os.makedirs(fake)
+        shutil.copy(os.path.join(FAKE_WORLD, "level.dat"), fake)
+        check("mods 里的伪世界被剪掉",
+              discover_worlds(os.path.join(tmp, "mc2")) == [deep],
+              str(discover_worlds(os.path.join(tmp, "mc2"))))
 
         a = os.path.join(saves, "世界A")
         one = plan_world(a, "0")

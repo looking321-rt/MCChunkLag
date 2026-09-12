@@ -31,8 +31,12 @@ from main import analyze_world, find_region_dirs, render_map_for   # noqa: E402
 
 from . import leveldat                                              # noqa: E402
 
-# 扫描时跳过的目录（世界目录里不会有这些，但从 .minecraft 上层扫进来时会有）
-SKIP_DIRS = {".git", "node_modules", "__pycache__", "logs", "backups", "screenshots"}
+# 扫描时跳过的目录（世界目录里不会有这些，但从 .minecraft / 整合包根扫进来时会有）
+# 只列**绝不可能藏着世界**的重目录（材质包/依赖库动辄上万文件，遍历它们纯属浪费）；
+# 启动器目录名五花八门（PCL 的「地图」「整合包」、各种中文包名），不能靠白名单反着挑。
+SKIP_DIRS = {".git", "node_modules", "__pycache__", "logs", "backups", "screenshots",
+             "crash-reports", "resourcepacks", "shaderpacks", "mods", "config",
+             "assets", "libraries", "cache", "runtime", "jre"}
 
 # 维度下拉选项（值 → 显示名）；后端 analyze_world 的 --dim 语义：0/-1/1/all
 DIM_CHOICES = (("0", "主世界"), ("-1", "下界"), ("1", "末地"), ("all", "全部维度"))
@@ -50,10 +54,15 @@ class ScanError(Exception):
     """无法开始扫描（目录不存在 / 目录下没有存档 / 全都没有区块数据）。"""
 
 
-def discover_worlds(root, max_depth=4):
+def discover_worlds(root, max_depth=8):
     """
     找存档世界目录：root 本身含 level.dat 就直接用；否则向下找（命中世界后不再往世界内部走）。
     兼容 saves/世界名 与 versions/<版本>/saves/世界名 这类嵌套。
+
+    深度 8 是「发现」与「扫描」共用的口径（保持一致，否则会出现"列表里有、扫却找不到"）：
+    hmcl 是 6 层，PCL 整合包是 `PCL/整合包/<包名>/.minecraft/versions/<版本>/saves/<世界>` 8 层。
+    重目录（assets/libraries/resourcepacks/mods 等）由 SKIP_DIRS 剪掉，实测扫两大启动器
+    36 个世界仅 1.5s。
     """
     root = os.path.abspath(root)
     if os.path.exists(os.path.join(root, "level.dat")):
