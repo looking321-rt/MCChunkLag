@@ -342,6 +342,14 @@ def test_gui_smoke():
                   str(win.cmb_dim["values"]))
             check("中断按钮初始不可用", str(win.btn_cancel["state"]) == "disabled", "")
             win._log_line("冒烟测试")
+            win._on_found({"kind": "found", "roots": [tmp],
+                           "worlds": [{"name": "W1", "dir": FAKE_WORLD,
+                                       "version": "1.20.1", "mtime": 1.0}]})
+            check("发现存档后自动填入路径", win.ent_path.get() == FAKE_WORLD, win.ent_path.get())
+            check("发现列表生成下拉项", len(win.cmb_found["values"]) == 1,
+                  str(win.cmb_found["values"]))
+            win._on_found({"kind": "found", "roots": [tmp], "worlds": []})
+            check("没找到存档时给提示且不崩", "没找到" in win.var_state.get(), win.var_state.get())
             win._on_progress({"kind": "progress", "world": "W", "world_i": 1, "world_n": 2,
                               "dim": "主世界", "file": "r.0.0.mca", "chunks": 1024,
                               "percent": 12.5, "elapsed": 3.0, "eta": 21.0, "done": 1, "total": 8})
