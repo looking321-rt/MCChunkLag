@@ -14,6 +14,8 @@ import os
 
 from . import nbt
 from . import leveldat
+from . import layout
+from . import region
 
 
 def _world_chunk(x, z):
@@ -21,17 +23,18 @@ def _world_chunk(x, z):
 
 
 def read_spawn_chunks(world_dir, radius=2):
-    """出生点恒加载区：出生点区块 + 半径 radius（spawnChunkRadius，默认2）。"""
-    ldat = os.path.join(world_dir, "level.dat")
-    if not os.path.exists(ldat):
+    """
+    出生点恒加载区：出生点区块 + 半径 radius（spawnChunkRadius，默认2）。
+
+    兼容新布局（26.x 的 `spawn: {pos,dimension}`）与旧布局（`SpawnX/SpawnZ`），
+    见 layout.spawn_position。
+    """
+    from . import layout
+
+    sp = layout.spawn_position(world_dir)
+    if not sp:
         return set()
-    data, _dv = leveldat.parse_level_dat(ldat)
-    if not data:
-        return set()
-    sx, sz = data.get("SpawnX"), data.get("SpawnZ")
-    if sx is None or sz is None:
-        return set()
-    cx, cz = _world_chunk(sx, sz)
+    cx, cz = _world_chunk(sp[0], sp[2])
     return {(cx + dx, cz + dz) for dx in range(-radius, radius + 1)
             for dz in range(-radius, radius + 1)}
 
@@ -126,17 +129,68 @@ def portal_regions(portal_chunks):
     """
     返回 **每个地狱门装置一个 region**：[(type, label, chunks), ...]。
 
-    只保留最外层「整体层 7×7」（它已含 3×3 实体层与 5×5 红石层）——三层都画会
-    糊成一片看不清；7×7 即传送门区块加载器的影响范围。
+    范围 = **5×5**（wiki：实体穿门后对面区块**完全加载 3×3**、外围 **16 个 lazy**，
+    合计 5×5 —— 2026-09-12 按官方口径从早期的 7×7 修正）。
 
     portal_chunks 应已由 `portal_loaders` 做过成对判定，这里只负责画框。
     """
     out = []
     for comp in cluster_chunks(portal_chunks):
         cx, cz = cluster_center(comp)
-        s = {(cx + dx, cz + dz) for dx in range(-3, 3 + 1)
-             for dz in range(-3, 3 + 1)}
+        s = {(cx + dx, cz + dz) for dx in range(-2, 2 + 1)
+             for dz in range(-2, 2 + 1)}
         out.append(("portal", "传送门常加载区", s))
+    return out
+
+
+def read_ender_pearls(world_dir):
+    """
+    读取玩家数据里的末影珍珠 —— 1.21.2+ 的「末影珍珠加载器」。
+
+    实测（26.2 存档）：珍珠**不在** entities/*.mca，而是存在玩家数据的
+    `ender_pearls` 列表里（每个元素是一份完整实体 NBT：Pos / ender_pearl_dimension /
+    Owner …）—— 玩家登出时珍珠从世界移除、登入时按这份数据重新加载，所以它一点落地
+    就会消失，能在存档里留下的珍珠**必然被静滞住（=正在持续加载区块）**。
+
+    返回 [{"x", "y", "z", "dim", "chunk"}]（chunk = 珍珠所在区块）。
+    """
+    import math
+
+    out = []
+    for path in layout.player_data_files(world_dir):
+        top = leveldat.parse_gzip_nbt(path)
+        if not isinstance(top, dict):
+            continue
+        pearls = top.get("ender_pearls")
+        if not isinstance(pearls, list):
+            continue
+        for p in pearls:
+            if not isinstance(p, dict):
+                continue
+            pos = p.get("Pos")
+            if not isinstance(pos, list) or len(pos) < 3:
+                continue
+            dim = p.get("ender_pearl_dimension") or p.get("Dimension") or "minecraft:overworld"
+            out.append({
+                "x": pos[0], "y": pos[1], "z": pos[2], "dim": dim,
+                "chunk": (int(math.floor(pos[0] / 16)), int(math.floor(pos[2] / 16))),
+            })
+    return out
+
+
+def pearl_regions(pearls):
+    """
+    末影珍珠加载区：**每颗珍珠一个 region**。
+
+    范围 = **3×3**（wiki：珍珠完全加载它所在的 1 个区块 + 外围 8 个 lazy，
+    比地狱门的 3×3 完全加载小）。
+    """
+    out = []
+    for p in pearls:
+        cx, cz = p["chunk"]
+        s = {(cx + dx, cz + dz) for dx in range(-1, 1 + 1)
+             for dz in range(-1, 1 + 1)}
+        out.append(("pearl", "珍珠强加载区", s))
     return out
 
 
@@ -168,6 +222,61 @@ def _chebyshev_gap(a, b):
 # 配对容差（下界区块，1 区块 = 16 方块）：门对不必精确落在 8:1 换算点上——
 # 玩家进传送门时游戏会在目标点附近找/生成配对门（生存_2 实测偏差 1 区块）。
 PORTAL_MATE_TOLERANCE = 8
+
+
+# 矿车家族实体（1.21.2+ 矿车地狱门加载器里的"循环实体"）
+MINECART_IDS = {
+    "minecart", "chest_minecart", "hopper_minecart", "furnace_minecart",
+    "tnt_minecart", "command_block_minecart", "spawner_minecart",
+}
+
+
+def read_minecart_chunks(entities_dir):
+    """
+    扫实体分区，返回**含矿车实体**的区块集合。
+
+    矿车地狱门加载器（1.21.2+）的关键证据之一：矿车是持久实体，会被写进区块存档，
+    所以离线存档能看到它（对比：末影珍珠存在玩家数据里，见 read_ender_pearls）。
+    """
+    out = set()
+    if not os.path.isdir(entities_dir):
+        return out
+    for cx, cz, chunk in region.scan_region_dir(entities_dir):
+        lvl = chunk.get("Level") if isinstance(chunk.get("Level"), dict) else chunk
+        ents = lvl.get("Entities")
+        if not isinstance(ents, list):
+            ents = lvl.get("entities")
+        for e in ents or []:
+            if not isinstance(e, dict):
+                continue
+            eid = str(e.get("id", "")).lower().replace("minecraft:", "")
+            if eid in MINECART_IDS:
+                out.add((cx, cz))
+                break
+    return out
+
+
+def loader_evidence(portal_chunks, redstone_chunks, rail_chunks, minecart_chunks, radius=1):
+    """
+    「门装置带加载器证据」的区块集合（装置级判定）。证据满足**任一**即可：
+
+      a) 装置邻域内有**红石器件** —— 物品循环式加载器（老做法）
+      b) 装置邻域内**同时**有**已激活的动力铁轨**与**矿车实体** —— 矿车地狱门加载器
+         （1.21.2+，用户 2026-09-12 指定：关键扫描 矿车 + 传送门方块 + 激活的动力铁轨）
+
+    装置级语义：聚类后一块满足 → 整个装置计入（跨区块装置不被拆散）。
+    """
+    redstone_chunks = set(redstone_chunks)
+    rail_chunks = set(rail_chunks)
+    minecart_chunks = set(minecart_chunks)
+    out = set()
+    for comp in cluster_chunks(portal_chunks):
+        near = _expand(comp, radius)
+        if near & redstone_chunks:
+            out |= comp
+        elif (near & rail_chunks) and (near & minecart_chunks):
+            out |= comp
+    return out
 
 
 def portal_loaders(portal_chunks, armed_chunks, mate_portal, mate_armed,

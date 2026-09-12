@@ -107,11 +107,11 @@ def test_map():
 
 
 def test_portal_regions_and_merge():
-    """传送门：只保留最外层 7×7；重叠的装置框合并成一个外接框（内部线条消失）。"""
+    """传送门：范围 5×5（3×3 完全加载 + 16 lazy）；重叠的装置框合并成一个外接框。"""
     from chunklag import loaders
     rs = loaders.portal_regions({(0, 0)})
     check("传送门只出一层 region", len(rs) == 1, str(len(rs)))
-    check("传送门范围为 7×7", len(rs[0][2]) == 49, str(len(rs[0][2])))
+    check("传送门范围为 5×5", len(rs[0][2]) == 25, str(len(rs[0][2])))
 
     two = loaders.portal_regions({(0, 0), (3, 0)})   # 两装置相隔 3 → 7×7 框重叠
     check("重叠前仍是 2 个 region", len(two) == 2, str(len(two)))
@@ -199,7 +199,7 @@ def test_portal_pair_filter():
     check("地图里只剩 1 个门常加载框", len(portal_regs) == 1, str(len(portal_regs)))
     check("框覆盖成对装置 (2,0)",
           bool(portal_regs) and [2, 0] in portal_regs[0]["chunks"], str(portal_regs))
-    check("提示已忽略 2 个门区块", "未成对/无红石2 已忽略" in msg, msg)
+    check("提示已忽略 2 个门区块", "未成对/无证据2 已忽略" in msg, msg)
 
 
 def test_top_excludes_zero():
@@ -243,6 +243,79 @@ def test_top_excludes_zero():
     check("零分存档地图不带红块数据", json.loads(m.group(1))["top"] == [], "")
 
 
+def test_new_layout_and_modern_loaders():
+    """新版布局（26.x dimensions/ + players/data）+ 1.21.2+ 加载器判据（2026-09-12）。
+
+    实测依据（用户 26.2 存档）：末影珍珠**不在 entities 分区**，而是存在
+    players/data/<uuid>.dat 的 ender_pearls 列表里；新版 level.dat 无 Data 包裹、
+    出生点是 spawn.pos；矿车地狱门加载器证据 = 传送门 + 矿车实体 + 已激活的动力铁轨。
+    """
+    import main as main_mod
+    from chunklag import layout, loaders
+    from make_fixture import NEW_WORLD, build_new_layout_world
+
+    build_new_layout_world()
+
+    dims = dict(layout.dimension_dirs(NEW_WORLD))
+    check("新版布局识别出 2 个维度",
+          set(dims) == {"minecraft:overworld", "minecraft:the_nether"}, str(sorted(dims)))
+    check("新版出生点 spawn.pos 解析",
+          layout.spawn_position(NEW_WORLD)[:3] == (0, -60, 0), str(layout.spawn_position(NEW_WORLD)))
+
+    results = main_mod.analyze_world(NEW_WORLD, "all")
+    check("全维度分析出 2 个结果", len(results) == 2, str(len(results)))
+    ow = [r for r in results if r[2].dimension_key == "0"][0][2]
+    nw = [r for r in results if r[2].dimension_key == "-1"][0][2]
+    check("主世界扫到门区块 (0,0)", ow.portal_chunks == {(0, 0)}, str(sorted(ow.portal_chunks)))
+    check("矿车+激活铁轨 → 主世界算加载器",
+          ow.portal_loader_chunks == {(0, 0)}, str(sorted(ow.portal_loader_chunks)))
+    check("下界配对侧也算加载器",
+          nw.portal_loader_chunks == {(0, 0)}, str(sorted(nw.portal_loader_chunks)))
+
+    pearls = loaders.read_ender_pearls(NEW_WORLD)
+    check("读到玩家数据里的末影珍珠", len(pearls) == 1, str(pearls))
+    check("珍珠维度与区块正确",
+          bool(pearls) and pearls[0]["dim"] == "minecraft:overworld"
+          and pearls[0]["chunk"] == (0, 0), str(pearls))
+    check("珍珠分派到主世界维度", len(ow.pearls) == 1 and len(nw.pearls) == 0, "")
+    check("珍珠 region 为 3×3",
+          len(loaders.pearl_regions(pearls)[0][2]) == 9, "")
+    check("珍珠 region 类型=pearl",
+          loaders.pearl_regions(pearls)[0][0] == "pearl", "")
+
+    # 矿车加载器证据：三项都要（激活铁轨 + 矿车）
+    check("激活铁轨+矿车 → 有证据",
+          loaders.loader_evidence({(0, 0)}, set(), {(0, 0)}, {(0, 0)}) == {(0, 0)}, "")
+    check("只有激活铁轨、无矿车 → 无证据",
+          loaders.loader_evidence({(0, 0)}, set(), {(0, 0)}, set()) == set(), "")
+    check("只有矿车、无激活铁轨 → 无证据",
+          loaders.loader_evidence({(0, 0)}, set(), set(), {(0, 0)}) == set(), "")
+    check("红石器件仍算证据",
+          loaders.loader_evidence({(0, 0)}, {(0, 0)}, set(), set()) == {(0, 0)}, "")
+    check("邻域内证据也算（3×3）",
+          loaders.loader_evidence({(5, 5)}, set(), {(6, 5)}, {(6, 5)}) == {(5, 5)}, "")
+
+    # 激活 / 未激活的动力铁轨（方块状态 Properties）
+    from chunklag import factors
+    from make_fixture import C, S, L, B, _chunk_nbt_blocks, _TAG_MAP  # noqa: F401
+    def rail_chunk(powered):
+        props = {"powered": powered}
+        raw = _chunk_nbt_blocks(0, 0, [("minecraft:powered_rail", props)])
+        from chunklag import nbt as nbt_mod
+        return nbt_mod.parse_nbt(raw)
+    check("已激活动力铁轨 → True", factors.has_active_powered_rail(rail_chunk("true")), "")
+    check("未激活动力铁轨 → False", not factors.has_active_powered_rail(rail_chunk("false")), "")
+
+    # 端到端：地图里同时出现门框与珍珠框
+    out = os.path.join(ROOT, "tests", "map_new_layout_test.html")
+    msg = main_mod.render_map_for(NEW_WORLD, ow, out, simdist=2, top_n=5)
+    check("新版布局渲染不崩", os.path.exists(out), msg)
+    txt = open(out, encoding="utf-8").read()
+    check("地图含珍珠强加载区", "珍珠强加载区" in txt, "")
+    check("地图含传送门常加载区", "传送门常加载区" in txt, "")
+    check("提示含珍珠数量", "珍珠: 1 颗" in msg, msg)
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -255,5 +328,6 @@ if __name__ == "__main__":
     test_render_map_with_portal()
     test_portal_pair_filter()
     test_top_excludes_zero()
+    test_new_layout_and_modern_loaders()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

@@ -40,6 +40,14 @@ def B(n):
     return ("byte", n)
 
 
+def D(n):
+    return ("double", n)
+
+
+def F(n):
+    return ("float", n)
+
+
 def _tcp_string(s):
     b = s.encode("utf-8")
     return struct.pack(">H", len(b)) + b
@@ -63,6 +71,10 @@ def _enc_value(spec):
         return _enc_compound_body(spec[1])
     if kind == "int":
         return _enc_int(spec[1])
+    if kind == "double":
+        return struct.pack(">d", spec[1])
+    if kind == "float":
+        return struct.pack(">f", spec[1])
     if kind == "byte":
         return _enc_byte(spec[1])
     if kind == "string":
@@ -74,7 +86,8 @@ def _enc_value(spec):
     raise ValueError("未知 spec: %r" % (spec,))
 
 
-_TAG_MAP = {"compound": 10, "int": 3, "byte": 1, "string": 8, "list": 9}
+_TAG_MAP = {"compound": 10, "int": 3, "byte": 1, "string": 8, "list": 9,
+            "double": 6, "float": 5}
 
 
 def _enc_compound_body(d):
@@ -173,10 +186,21 @@ PORTAL_WORLD = os.path.join(HERE, "portal_world")
 
 
 def _chunk_nbt_blocks(x, z, block_names, block_entity_ids=()):
-    """构造带方块 palette 的区块 NBT（1.18+ 结构：section.block_states.palette）。"""
+    """
+    构造带方块 palette 的区块 NBT（1.18+ 结构：section.block_states.palette）。
+
+    block_names 元素：字符串（方块名）或 (名字, {"powered": "true"}) 元组（带方块状态）。
+    """
+    pal = []
+    for b in block_names:
+        if isinstance(b, tuple):
+            pal.append(C({"Name": S(b[0]),
+                          "Properties": C({k: S(v) for k, v in b[1].items()})}))
+        else:
+            pal.append(C({"Name": S(b)}))
     sections = L(10, [C({
         "Y": B(0),
-        "block_states": C({"palette": L(10, [C({"Name": S(n)}) for n in block_names])}),
+        "block_states": C({"palette": L(10, pal)}),
     })])
     be = L(10, [C({"id": S(bid)}) for bid in block_entity_ids])
     root = C({
@@ -225,6 +249,73 @@ def build_portal_world():
     print("已生成门判据测试世界 -> %s" % PORTAL_WORLD)
 
 
+NEW_WORLD = os.path.join(HERE, "new_world")
+NEW_DATA_VERSION = 4903          # 26.2
+
+
+def _entity_chunk_nbt(x, z, entity_ids):
+    """实体分区区块 NBT（1.16+：顶层直接含 Entities 列表）。"""
+    ents = L(10, [C({"id": S(eid)}) for eid in entity_ids])
+    root = C({"DataVersion": I(NEW_DATA_VERSION), "xPos": I(x), "zPos": I(z),
+              "Entities": ents})
+    return enc_compound(root)
+
+
+def _player_dat_bytes(pos, pearls):
+    """玩家数据 NBT（26.x：players/data/<uuid>.dat；末影珍珠在 ender_pearls 列表里）。"""
+    pearl_specs = [C({"id": S("minecraft:ender_pearl"),
+                      "Pos": L(6, [D(v) for v in p]),
+                      "ender_pearl_dimension": S("minecraft:overworld")}) for p in pearls]
+    root = C({
+        "DataVersion": I(NEW_DATA_VERSION),
+        "Pos": L(6, [D(v) for v in pos]),
+        "Dimension": S("minecraft:overworld"),
+        "ender_pearls": L(10, pearl_specs),
+    })
+    return gzip.compress(enc_compound(root))
+
+
+def build_new_layout_world():
+    """
+    合成「新版布局 + 1.21.2+ 加载器」测试世界（26.x 结构）：
+
+      dimensions/minecraft/overworld/region   (0,0) 地狱门 + 已激活动力铁轨
+      dimensions/minecraft/overworld/entities (0,0) 矿车实体（矿车地狱门加载器证据）
+      dimensions/minecraft/the_nether/region  (0,0) 地狱门 + 已激活动力铁轨（配对侧）
+      players/data/<uuid>.dat                ender_pearls 一颗（Pos[8,-50,8] → 区块 (0,0)）
+    """
+    ow = os.path.join(NEW_WORLD, "dimensions", "minecraft", "overworld")
+    nw = os.path.join(NEW_WORLD, "dimensions", "minecraft", "the_nether")
+    for d in (os.path.join(ow, "region"), os.path.join(ow, "entities"),
+              os.path.join(nw, "region"), os.path.join(NEW_WORLD, "players", "data")):
+        os.makedirs(d, exist_ok=True)
+
+    level = enc_compound(C({
+        "DataVersion": I(NEW_DATA_VERSION),
+        "LevelName": S("新版布局测试"),
+        "spawn": C({"pos": L(3, [I(0), I(-60), I(0)]), "pitch": F(0.0), "yaw": F(0.0),
+                    "dimension": S("minecraft:overworld")}),
+        "Version": C({"Id": I(NEW_DATA_VERSION), "Name": S("26.2")}),
+    }))
+    with open(os.path.join(NEW_WORLD, "level.dat"), "wb") as f:
+        f.write(gzip.compress(level))
+
+    portal = ["minecraft:obsidian", "minecraft:nether_portal"]
+    active_rail = ("minecraft:powered_rail", {"powered": "true", "shape": "north_south"})
+    with open(os.path.join(ow, "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _chunk_nbt_blocks(0, 0, portal + [active_rail]))]))
+    with open(os.path.join(nw, "region", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _chunk_nbt_blocks(0, 0, portal + [active_rail]))]))
+    with open(os.path.join(ow, "entities", "r.0.0.mca"), "wb") as f:
+        f.write(_build_region([(0, 0, _entity_chunk_nbt(0, 0, ["minecraft:minecart"]))]))
+    pearl_dat = os.path.join(NEW_WORLD, "players", "data",
+                             "00000000-0000-0000-0000-000000000001.dat")
+    with open(pearl_dat, "wb") as f:
+        f.write(_player_dat_bytes([-141.0, -60.0, 41.0], [[8.0, -50.0, 8.0]]))
+    print("已生成新版布局测试世界 -> %s" % NEW_WORLD)
+
+
 if __name__ == "__main__":
     build()
     build_portal_world()
+    build_new_layout_world()

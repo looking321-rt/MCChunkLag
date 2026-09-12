@@ -159,26 +159,53 @@ _REDSTONE_BE_IDS = {
 }
 
 
-def _chunk_block_names(nbt_dict):
-    """收集区块 palette 里所有方块名（归一化）。"""
+def _chunk_block_entries(nbt_dict):
+    """
+    收集区块 palette 的 [(方块名小写, Properties 字典), ...]。
+
+    注意：MC 1.18+ 方块 palette 在 section.block_states.palette（非 section.palette），
+    旧版/构造数据才在 section.palette —— 两种都兼容。Properties 是方块状态
+    （如 powered_rail 的 powered: "true"），新版（26.x 实测）照样存在。
+    """
     level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
     if not isinstance(level, dict):
         level = nbt_dict or {}
-    names = set()
+    out = []
     for sec in level.get("sections") or []:
         if not isinstance(sec, dict):
             continue
-        # 1.18+ 方块 palette 在 section.block_states.palette；旧版/构造在 section.palette
         bs = sec.get("block_states") if isinstance(sec, dict) else None
         pal = bs.get("palette") if isinstance(bs, dict) else None
         if not isinstance(pal, list):
             pal = sec.get("palette")
         for p in pal or []:
-            if isinstance(p, dict):
-                nm = str(p.get("Name", "")).lower()
-                if nm:
-                    names.add(nm)
-    return names
+            if not isinstance(p, dict):
+                continue
+            nm = str(p.get("Name", "")).lower()
+            if not nm:
+                continue
+            props = p.get("Properties")
+            out.append((nm, props if isinstance(props, dict) else {}))
+    return out
+
+
+def _chunk_block_names(nbt_dict):
+    """收集区块 palette 里所有方块名（归一化）。"""
+    return {n for n, _p in _chunk_block_entries(nbt_dict)}
+
+
+def has_active_powered_rail(nbt_dict):
+    """
+    区块是否含**已激活**的动力铁轨（powered_rail 且 Properties.powered == "true"）。
+
+    2026-09-12 用户指定的矿车地狱门加载器关键证据之一：
+    1.21.2 起矿车穿门冷却 15s → 0.5s，只需让矿车在铁轨上循环跑，被激活的动力铁轨
+    就是"矿车确实在循环"的硬证据（未激活的动力铁轨只是普通轨道，不算）。
+    """
+    for name, props in _chunk_block_entries(nbt_dict):
+        if name.endswith("powered_rail") and str(props.get("powered", "")).lower() == "true":
+            return True
+    return False
 
 
 def is_portal_loader(nbt_dict):

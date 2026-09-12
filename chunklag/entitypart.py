@@ -13,8 +13,15 @@ from .factors import _entity_factor
 
 
 class EntityPartition:
-    def __init__(self, world_dir):
-        self.dir = os.path.join(world_dir, "entities")
+    def __init__(self, base_dir):
+        """
+        base_dir 兼容三种传法：
+          · 维度目录（新布局 dimensions/<ns>/<dim>/、旧布局 世界根 / DIM-1）→ 自动取其中的 entities/
+          · 世界根目录（旧布局 <world>/entities/）
+          · entities 目录本身
+        """
+        cand = os.path.join(base_dir, "entities")
+        self.dir = cand if os.path.isdir(cand) else base_dir
         self._cache = {}
 
     def exists(self):

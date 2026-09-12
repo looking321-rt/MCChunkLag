@@ -17,7 +17,7 @@ _REDSTONE_BE = {r.replace("minecraft:", "") for r in factors._REDSTONE_BE_IDS}
 
 
 def scan_portals(rdir):
-    """轻量扫描某维度 region：返回 (门区块集, 门+红石区块集, 每区块红石证据)。"""
+    """轻量扫描某维度 region：返回 (门区块集, 门+加载器证据区块集, 每区块证据)。"""
     portal, armed, evidence = set(), set(), {}
     if not os.path.isdir(rdir):
         return portal, armed, evidence
@@ -30,7 +30,12 @@ def scan_portals(rdir):
         bes = [factors._norm_id(b.get("id")) for b in factors._extract_block_entities(lvl)]
         blocks = sorted(n.replace("minecraft:", "") for n in names if n in factors._REDSTONE_BLOCKS)
         bes_hit = sorted({b for b in bes if b in _REDSTONE_BE})
-        evidence[(cx, cz)] = blocks + ["<BE>" + b for b in bes_hit]
+        ev = blocks + ["<BE>" + b for b in bes_hit]
+        if factors.has_active_powered_rail(nbt):
+            ev.append("激活动力铁轨")
+        elif any(n.endswith("powered_rail") for n in names):
+            ev.append("(未激活动力铁轨)")
+        evidence[(cx, cz)] = ev
         if blocks or bes_hit:
             armed.add((cx, cz))
     return portal, armed, evidence
