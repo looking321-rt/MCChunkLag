@@ -151,7 +151,27 @@ def to_mate_chunks(chunks, from_overworld):
             for cx, cz in chunks for dx in range(8) for dz in range(8)}
 
 
-def portal_loaders(portal_chunks, armed_chunks, mate_portal, mate_armed, is_overworld):
+def nether_chunks(chunks, is_overworld):
+    """把一侧维度的区块集合换算到「下界区块尺度」：主世界 ÷8，下界原样（配对比较用）。"""
+    if is_overworld:
+        return {(cx // 8, cz // 8) for cx, cz in chunks}
+    return set(chunks)
+
+
+def _chebyshev_gap(a, b):
+    """两个区块集合的最小切比雪夫距离（重叠/相邻=0）；任一为空返回 None。"""
+    if not a or not b:
+        return None
+    return min(max(abs(x1 - x2), abs(z1 - z2)) for x1, z1 in a for x2, z2 in b)
+
+
+# 配对容差（下界区块，1 区块 = 16 方块）：门对不必精确落在 8:1 换算点上——
+# 玩家进传送门时游戏会在目标点附近找/生成配对门（生存_2 实测偏差 1 区块）。
+PORTAL_MATE_TOLERANCE = 8
+
+
+def portal_loaders(portal_chunks, armed_chunks, mate_portal, mate_armed,
+                   is_overworld, tolerance=PORTAL_MATE_TOLERANCE):
     """
     返回**算「地狱门常加载装置」的门区块集合**（装置级判定，2026-09-12 用户拍板）。
 
@@ -162,20 +182,23 @@ def portal_loaders(portal_chunks, armed_chunks, mate_portal, mate_armed, is_over
     - portal_chunks / armed_chunks：本维度 含门 / 含门+红石 的区块
     - mate_portal / mate_armed：对面维度（主世界↔下界）的两类区块
     - is_overworld：本维度是否主世界（决定坐标缩放方向）
+    - tolerance：配对容差（下界区块），两侧装置换算到下界尺度后距离 ≤ 它即算配对
 
     装置级语义：先聚类成装置，整装置一起通过/一起否掉；对面只要有一个配对装置
     带红石，本装置就算加载器。
     """
     armed = set(armed_chunks)
     mate_armed = set(mate_armed)
-    mate_devices = cluster_chunks(mate_portal)
+    mate_devices = [(nether_chunks(comp, not is_overworld), comp)
+                    for comp in cluster_chunks(mate_portal)]
     out = set()
     for comp in cluster_chunks(portal_chunks):
         if not (comp & armed):
             continue                      # 本侧无红石装置 → 不是实体循环加载器
-        mapped = to_mate_chunks(comp, is_overworld)
-        for m_comp in mate_devices:
-            if (mapped & m_comp) and (m_comp & mate_armed):
+        mine = nether_chunks(comp, is_overworld)
+        for mate_n, mate_comp in mate_devices:
+            gap = _chebyshev_gap(mine, mate_n)
+            if gap is not None and gap <= tolerance and (mate_comp & mate_armed):
                 out |= comp               # 对面有配对门装置且有红石 → 整个装置算加载器
                 break
     return out

@@ -159,7 +159,7 @@ def test_portal_pair_filter():
     build_portal_world()
     res = main_mod.analyze_world(PORTAL_WORLD, "0")[0][2]
     check("主世界扫到 3 个门区块",
-          res.portal_chunks == {(0, 0), (2, 0), (28, 0)}, str(sorted(res.portal_chunks)))
+          res.portal_chunks == {(0, 0), (2, 0), (108, 0)}, str(sorted(res.portal_chunks)))
     check("主世界只把成对的 (2,0) 算常加载装置",
           res.portal_loader_chunks == {(2, 0)}, str(sorted(res.portal_loader_chunks)))
 
@@ -180,6 +180,13 @@ def test_portal_pair_filter():
           loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(0, 0)}, set(), True) == set(), "")
     check("两侧齐 → 通过",
           loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(0, 0)}, {(0, 0)}, True) == {(0, 0)}, "")
+    # 配对容差：门对不必精确落在 8:1 换算点（生存_2 实测偏差 1 区块）
+    check("容差内（偏差 1 区块）→ 通过",
+          loaders.portal_loaders({(9, -35)}, {(9, -35)}, {(0, -4)}, {(0, -4)}, True) == {(9, -35)}, "")
+    check("容差边界（8 区块）→ 通过",
+          loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(8, 0)}, {(8, 0)}, True) == {(0, 0)}, "")
+    check("超出容差（9 区块）→ 不通过",
+          loaders.portal_loaders({(0, 0)}, {(0, 0)}, {(9, 0)}, {(9, 0)}, True) == set(), "")
 
     out = os.path.join(ROOT, "tests", "map_portal_filter_test.html")
     msg = main_mod.render_map_for(PORTAL_WORLD, res, out, simdist=2,

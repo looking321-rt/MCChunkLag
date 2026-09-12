@@ -41,25 +41,35 @@ def report_side(label, mine, mate, is_overworld, mate_label):
     m_portal, m_armed, _ = mate
     if not portal:
         return
+    tol = loaders.PORTAL_MATE_TOLERANCE
     kept = loaders.portal_loaders(portal, armed, m_portal, m_armed, is_overworld)
-    mate_devices = loaders.cluster_chunks(m_portal)
+    mate_devices = [(loaders.nether_chunks(d, not is_overworld), d)
+                    for d in loaders.cluster_chunks(m_portal)]
     for comp in sorted(loaders.cluster_chunks(portal), key=lambda c: sorted(c)[0]):
         cx, cz = loaders.cluster_center(comp)
-        mapped = loaders.to_mate_chunks(comp, is_overworld)
-        paired = [d for d in mate_devices if mapped & d]
+        mine_n = loaders.nether_chunks(comp, is_overworld)
+        gaps = [(loaders._chebyshev_gap(mine_n, mn), md) for mn, md in mate_devices]
+        gaps = [(g, d) for g, d in gaps if g is not None]
+        near = min(gaps)[0] if gaps else None
+        mate_wired = any(g <= tol and (d & m_armed) for g, d in gaps)
         ev = sorted({e for c in comp for e in evidence.get(c, [])})
-        verdict = "算常加载装置" if comp <= kept else "不算"
-        why = ""
-        if comp > kept:
+        if comp <= kept:
+            verdict, why = "算常加载装置", ""
+        else:
+            verdict = "不算"
             if not (comp & armed):
                 why = "（本侧无红石装置）"
-            elif not paired:
-                why = "（%s 侧无配对地狱门）" % mate_label
+            elif near is None:
+                why = "（%s 侧没有地狱门）" % mate_label
+            elif near > tol:
+                why = "（%s 侧最近门装置距离 %d 区块 > 容差 %d）" % (mate_label, near, tol)
             else:
                 why = "（配对侧无红石装置）"
-        print("  [%s] 装置@%s 区块%d 红石=%s → 对面%s装置%d个 → %s%s"
+        print("  [%s] 装置@%s 区块%d 红石=%s → %s侧%s → %s%s"
               % (label, (cx, cz), len(comp), ",".join(ev) if ev else "无",
-                 mate_label, len(paired), verdict, why))
+                 mate_label,
+                 "无门装置" if near is None else "最近门装置距离%d 红石=%s" % (near, "有" if mate_wired else "无"),
+                 verdict, why))
 
 
 def main():
