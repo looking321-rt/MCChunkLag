@@ -339,6 +339,7 @@ class ScanJob:
                 continue
 
             hook = _ProgressHook(self, item, i, len(plan))
+            t_world = time.time()
             try:
                 all_results = analyze_world(item.world_dir, self.opts.dim, hook=hook)
             except ScanCancelled:
@@ -359,11 +360,13 @@ class ScanJob:
                 results.append(WorldResult(name=item.name, skipped=reason))
                 continue
 
+            world_scan = time.time() - t_world        # 世界扫描耗时（多维度的行都会带上）
             for _rdir, dim_name, res, _dim_dir in all_results:
                 if self._cancel.is_set():
                     self._mark_cancelled("停止后续维度")
                     break
-                results.append(self._finish_one(item, i, len(plan), dim_name, res))
+                results.append(self._finish_one(item, i, len(plan), dim_name, res,
+                                                 base_seconds=world_scan))
             if self.was_cancelled:
                 break
 
@@ -375,8 +378,13 @@ class ScanJob:
                     "results": results, "out": os.path.abspath(self.opts.out)})
         return results
 
-    def _finish_one(self, item, world_i, world_n, dim_name, res):
-        """渲染一个维度的地图 + 文字报告，返回结果条目。"""
+    def _finish_one(self, item, world_i, world_n, dim_name, res, base_seconds=0.0):
+        """
+        渲染一个维度的地图 + 文字报告，返回结果条目。
+
+        base_seconds = 该世界的扫描耗时（同一世界的每个维度行都带上，外加本维度的渲染耗时）。
+        早先只算渲染 → 结果表/汇总里"耗时"显示 0.0s，看起来像没扫（真机 生电 实测踩到）。
+        """
         t0 = time.time()
         out_dir = os.path.join(self.opts.out,
                                "%02d_%s" % (world_i, safe_name(item.name, "world%d" % world_i)),
@@ -396,7 +404,7 @@ class ScanJob:
                 f.write(report.render_text(res, top_n=self.opts.top))
         wr = WorldResult(name=item.name, dim=dim_name, out_dir=out_dir,
                          chunks=res.total_chunks, score=res.total_score,
-                         top=top_txt, seconds=time.time() - t0)
+                         top=top_txt, seconds=base_seconds + (time.time() - t0))
         self._log("   → %s（%.1fs）" % (out_dir, wr.seconds))
         self._emit({"kind": "world_done", "result": wr, "world_i": world_i, "world_n": world_n})
         return wr

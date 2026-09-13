@@ -126,8 +126,27 @@ def save_config(data):
         pass          # 配置存不下来不该影响使用
 
 
+def _top_score(r):
+    """「最卡区块」列 `(x,z)=分数` → 分数（解析不出来给 -1，让它们沉底）。"""
+    try:
+        return int(str(r.top).rsplit("=", 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return -1
+
+
 # ---------------------------------------------------------------- 界面
 class ScanGui:
+    # 结果表：列 → 排序键；数值列点一下默认从大到小，文本列默认 A→Z
+    SORT_KEYS = {
+        "world": lambda r: r.name,
+        "dim": lambda r: r.dim,
+        "chunks": lambda r: r.chunks,
+        "score": lambda r: r.score,
+        "top": _top_score,
+        "time": lambda r: r.seconds,
+    }
+    NUMERIC_COLS = ("chunks", "score", "top", "time")
+
     def __init__(self, root, initial_path=None):
         self.root = root
         self.cfg = load_config()
@@ -136,6 +155,8 @@ class ScanGui:
         self.worker = None
         self.results = []              # Treeview 行序 → WorldResult
         self.found = []                # 发现到的存档
+        self._sort_col = None          # 当前排序列（None = 完成顺序）
+        self._sort_desc = True
         self._closing = False
         self._after_id = None          # 界面刷新定时器（关窗前要取消，否则销毁后 Tk 报 invalid command name）
         self._build(initial_path or self.cfg.get("last_path", ""))
@@ -253,16 +274,18 @@ class ScanGui:
         self.log.tag_configure("warn", foreground="#b35c00")
 
         # ⑥ 结果
-        box5 = ttk.LabelFrame(root, text=" 结果一览（双击一行用浏览器打开该地图） ")
+        box5 = ttk.LabelFrame(root, text=" 结果一览（点列头排序 · 双击一行用浏览器打开该地图） ")
         box5.grid(row=5, column=0, sticky="nsew", padx=10, pady=4)
         box5.columnconfigure(0, weight=1)
         box5.rowconfigure(0, weight=1)
-        cols = ("world", "dim", "chunks", "score", "top", "time")
-        heads = ("世界", "维度", "区块数", "总卡顿分", "最卡区块", "耗时")
+        self._cols = ("world", "dim", "chunks", "score", "top", "time")
+        self._col_heads = dict(zip(self._cols,
+                                   ("世界", "维度", "区块数", "总卡顿分", "最卡区块", "耗时")))
         widths = (200, 110, 80, 90, 140, 80)
-        self.tree = ttk.Treeview(box5, columns=cols, show="headings", height=6)
-        for c, h, w in zip(cols, heads, widths):
-            self.tree.heading(c, text=h)
+        self.tree = ttk.Treeview(box5, columns=self._cols, show="headings", height=6)
+        for c, w in zip(self._cols, widths):
+            self.tree.heading(c, text=self._col_heads[c],
+                              command=lambda col=c: self._sort_by(col))
             self.tree.column(c, width=w, anchor="center" if c != "world" else "w")
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=6)
         sb = ttk.Scrollbar(box5, orient="vertical", command=self.tree.yview)
@@ -415,6 +438,8 @@ class ScanGui:
 
         self.results = []
         self.tree.delete(*self.tree.get_children())
+        self._sort_col, self._sort_desc = None, True      # 新一批结果回到「完成顺序」
+        self._update_headings()
         self.bar.configure(value=0.0)
         self.var_pct.set("0%")
         self.var_detail.set("正在准备…")
@@ -532,12 +557,62 @@ class ScanGui:
 
     def _add_result(self, r):
         self.results.append(r)
-        if r.skipped:
-            self.tree.insert("", "end", tags=("skip",),
-                             values=(r.name, "—", "—", "—", "—", r.skipped))
+        self._insert_row(r)
+
+    # ---------------- 结果表排序 ----------------
+    def _sort_by(self, col):
+        """
+        点列头排序：同列再点反向。被跳过的世界**恒排最后**（它们没有可比数值）。
+
+        重建行时**咬住**当前选中项 —— 排序只是换位置，不该把选中丢掉（和 tps-meter
+        那条"当前选中项要咬住"同一个道理）。
+        """
+        if self._sort_col == col:
+            self._sort_desc = not self._sort_desc
         else:
-            self.tree.insert("", "end", values=(r.name, r.dim, format(r.chunks, ","),
-                                                r.score, r.top, fmt_seconds(r.seconds)))
+            self._sort_col = col
+            self._sort_desc = col in self.NUMERIC_COLS          # 数值列默认从大到小
+        key = self.SORT_KEYS.get(col)
+        if key is not None and self.results:
+            ok = [r for r in self.results if not r.skipped]
+            bad = [r for r in self.results if r.skipped]
+            ok.sort(key=key, reverse=self._sort_desc)
+            self.results = ok + bad
+        self._refresh_tree()
+        self._update_headings()
+
+    def _refresh_tree(self):
+        keep = None
+        sel = self.tree.selection()
+        if sel:
+            idx = self.tree.index(sel[0])
+            if 0 <= idx < len(self.results):
+                keep = self.results[idx]
+        self.tree.delete(*self.tree.get_children())
+        for r in self.results:
+            self._insert_row(r)
+        if keep is not None:
+            iid = self.tree.get_children()[self.results.index(keep)]
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+
+    def _insert_row(self, r):
+        self.tree.insert("", "end", tags=("skip",) if r.skipped else (),
+                         values=self._row_values(r))
+
+    @staticmethod
+    def _row_values(r):
+        if r.skipped:
+            return (r.name, "—", "—", "—", "—", r.skipped)
+        return (r.name, r.dim, "{:,}".format(r.chunks), r.score, r.top,
+                fmt_seconds(r.seconds))
+
+    def _update_headings(self):
+        for c in self._cols:
+            head = self._col_heads[c]
+            if c == self._sort_col:
+                head += " ▼" if self._sort_desc else " ▲"
+            self.tree.heading(c, text=head)
 
     def _on_done(self, ev):
         self._set_running(False)

@@ -343,6 +343,26 @@ class _MsgBoxStub:
         return [c for c in self.calls if c[0] == "error"]
 
 
+def test_finish_one_includes_scan_time():
+    """
+    结果里的「耗时」必须含**世界扫描时间**，不能只算渲染。
+
+    真机踩过：生电存档扫了 17s，结果表与汇总却显示 0.0s（只计了出图那一下），
+    看起来像根本没扫。这条断言就是钉住 base_seconds 被算进去。
+    """
+    import main as main_mod
+    from chunklag.scanjob import _PlanItem
+    with TempDir("finish_one") as tmp:
+        res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+        job = ScanJob(ScanOptions(path=FAKE_WORLD, out=os.path.join(tmp, "out"), dim="0"))
+        item = _PlanItem(world_dir=FAKE_WORLD, name="测试世界")
+        wr = job._finish_one(item, 1, 1, "主世界", res, base_seconds=7.5)
+        check("耗时含世界扫描时间（base_seconds）", wr.seconds >= 7.5, str(wr.seconds))
+        check("渲染照样出图", os.path.exists(wr.map_path), wr.map_path)
+        wr2 = job._finish_one(item, 1, 1, "主世界", res)
+        check("不传 base_seconds 时退化为纯渲染耗时", wr2.seconds < 7.5, str(wr2.seconds))
+
+
 def test_gui_helpers():
     from chunklag import gui
     check("fmt_size 用 MB/GB", gui.fmt_size(3 * 1048576) == "3.0 MB", gui.fmt_size(3 * 1048576))
@@ -508,6 +528,68 @@ def test_gui_end_to_end():
                 check("跳过项的 map_path 为空", skip_rows[0].map_path == "", "")
                 win._open_selected_map()     # 走一遍真实分支（对话框已被替身接住）
                 check("跳过项提示走的是 info 而非错误", not stub.errors, str(stub.errors))
+
+            # ---- 结果表排序（用可控数据，避免依赖真实扫描的分数分布）----
+            win.results = []
+            win.tree.delete(*win.tree.get_children())
+            mk = scanjob.WorldResult
+            win._add_result(mk(name="甲", dim="主世界", chunks=100, score=5,
+                               top="(0,0)=5", seconds=1.0))
+            win._add_result(mk(name="乙", dim="主世界", chunks=900, score=99,
+                               top="(1,1)=99", seconds=9.0))
+            win._add_result(mk(name="丙", skipped="跳过：没有 region 区块数据"))
+            win._add_result(mk(name="丁", dim="下界", chunks=500, score=42,
+                               top="(2,2)=42", seconds=4.0))
+
+            win._sort_by("score")
+            check("点「总卡顿分」列 → 降序",
+                  [r.name for r in win.results] == ["乙", "丁", "甲", "丙"],
+                  str([r.name for r in win.results]))
+            check("被跳过的世界恒排最后", win.results[-1].skipped, "")
+            rows = [win.tree.item(i, "values")[0] for i in win.tree.get_children()]
+            check("表格行序与结果序一致", rows == ["乙", "丁", "甲", "丙"], str(rows))
+            check("表头标出排序方向", "▼" in win.tree.heading("score", "text"),
+                  win.tree.heading("score", "text"))
+
+            win._sort_by("score")
+            check("同列再点一次 → 反向（升序）",
+                  [r.name for r in win.results] == ["甲", "丁", "乙", "丙"],
+                  str([r.name for r in win.results]))
+
+            win._sort_by("world")
+            names = [r.name for r in win.results if not r.skipped]
+            check("文本列默认升序", names == sorted(names), str(names))
+
+            # 排序换位置时不能丢选中（"选中项要咬住"）
+            iid = win.tree.get_children()[2]
+            picked = win.tree.item(iid, "values")[0]
+            win.tree.selection_set(iid)
+            win._sort_by("chunks")
+            sel = win.tree.selection()
+            check("排序后选中项仍咬住同一行",
+                  bool(sel) and win.tree.item(sel[0], "values")[0] == picked,
+                  "%s → %s" % (picked, win.tree.item(sel[0], "values")[0] if sel else "无"))
+
+            # ---- 第二轮：全部维度（同一世界要出多个维度的行 + 各自 map.html）----
+            win.var_dim.set("全部维度")
+            win._start()
+            check("第二轮开始：结果表被清空复位", len(win.tree.get_children()) == 0,
+                  str(len(win.tree.get_children())))
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                root.update()
+                if win.worker is None and win.results:
+                    break
+                time.sleep(0.02)
+            ok2 = [r for r in win.results if not r.skipped]
+            dims = {r.dim for r in ok2}
+            check("全部维度：主世界与下界都出了结果", dims == {"主世界", "下界"}, str(dims))
+            check("每维度各有自己的目录与地图",
+                  len({r.out_dir for r in ok2}) == len(ok2)
+                  and all(os.path.exists(r.map_path) for r in ok2),
+                  str([(r.dim, r.out_dir) for r in ok2]))
+            check("第二轮也没弹错误框", not stub.errors, str(stub.errors))
+
             win._stop_pump()
             root.update()
             root.destroy()
@@ -524,6 +606,7 @@ if __name__ == "__main__":
     test_cancel_keeps_finished_worlds()
     test_cancel_must_be_base_exception()
     test_errors_and_edge_cases()
+    test_finish_one_includes_scan_time()
     test_gui_helpers()
     test_gui_smoke()
     test_gui_end_to_end()
