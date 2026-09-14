@@ -512,6 +512,18 @@ def test_item_stack_counting():
     check("不做加载判定时 e == s",
           all(x["e"] == x["s"] for x in d2["chunks"]), "")
 
+    # 色块分档阈值必须**随分布自适应**（固定阈值 + 权重换尺度 = 全图顶格红，2026-09-15 修）
+    multi = types.SimpleNamespace(chunk_entries={
+        (0, 0): dict(zero, be_container=1),        # 30  → 1 个静态箱子
+        (1, 0): dict(zero, entities_hostile=1),    # 300 → 1 只怪
+        (2, 0): dict(zero, entities_hostile=1),    # 300
+        (3, 0): dict(zero, be_hopper=1),           # 600 → 1 个漏斗
+        (4, 0): dict(zero, be_hopper=2),           # 1200
+    })
+    dm2 = mapdata.build_map_data(multi, top_n=20)
+    check("色块阈值 = 非零区块 p50/p90/p99（1 只怪及以下算最低档）",
+          dm2["bands"] == [300, 1200, 1200], str(dm2["bands"]))
+
     # 端到端：build_union_map 按「常加载×2 / 玩家区×1 / 其余×0」给系数
     res3 = types.SimpleNamespace(chunk_entries={(0, 0): dict(hot), (1, 1): dict(hot),
                                                 (5, 5): dict(hot)})

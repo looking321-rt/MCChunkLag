@@ -66,10 +66,11 @@ _TEMPLATE = """<!DOCTYPE html>
   <div id="total">区块数: —</div>
   <div id="pinfo"></div>
   <div id="legend"><span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span></div>
+  <div id="bandtext" style="font-size:11px;color:#7f849c;margin-top:4px;"></div>
   <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
   <button class="btn" id="reset">适配视图</button>
   <div id="regionlegend" style="margin-top:6px;font-size:11px;line-height:1.7;"></div>
-  <div id="hint">着色按<b>基础分</b>（该区块若被加载会有多贵）；TOP 与悬停里的<b>有效分</b>＝基础分×加载系数（常加载区×2 · 玩家加载区×1 · 其余×0＝根本不会被 tick）。分值单位 0.01；非真实 mspt。</div>
+  <div id="hint">着色按<b>基础分</b>（该区块若被加载会有多贵），阈值随本图分布自适应、不会被 tick 的区块压暗；TOP 与悬停里的<b>有效分</b>＝基础分×加载系数（常加载区×2 · 玩家加载区×1 · 其余×0）。分值单位 0.01；非真实 mspt。</div>
 </div>
 
 <div id="coordbar" class="card">
@@ -110,12 +111,17 @@ const chunks = new Map();
 for(const c of DATA.chunks) chunks.set(c.x*100000+c.z, c);
 
 function lerp(a,b,t){return Math.round(a+(b-a)*t);}
+// 色块分档阈值：**随本图分布自适应**（DATA.bands = 非零区块的 p50/p90/p99）。
+// ⚠️ 固定阈值（旧版 5/20/60）会随权重尺度失效 —— 权重放大 100 倍后一套全红（2026-09-15 修）。
+const BANDS = (DATA.bands && DATA.bands[2] > 0) ? DATA.bands.slice() : [300, 600, 1200];
+for(let i=1;i<BANDS.length;i++) if(BANDS[i] <= BANDS[i-1]) BANDS[i] = BANDS[i-1] + 1;
+
 function colorFor(score){
-  // 固定阈值离散 5 档：灰=0 · 绿<=5 · 黄<=20 · 橘<=60 · 红>60
+  // 离散 5 档：灰=0(空) · 绿<=p50 · 黄<=p90 · 橘<=p99 · 红>p99
   if(score<=0) return [50,50,58];
-  if(score<=5) return [70,200,90];
-  if(score<=20) return [230,220,60];
-  if(score<=60) return [240,150,40];
+  if(score<=BANDS[0]) return [70,200,90];
+  if(score<=BANDS[1]) return [230,220,60];
+  if(score<=BANDS[2]) return [240,150,40];
   return [230,50,50];
 }
 
@@ -126,7 +132,10 @@ off.width = mapW; off.height = mapZ;
 const octx = off.getContext('2d');
 octx.fillStyle = '#28282e'; octx.fillRect(0,0,mapW,mapZ);
 for(const c of DATA.chunks){
-  const col=colorFor(c.s);
+  let col=colorFor(c.s);
+  // 不会被 tick 的区块（加载系数 0）：颜色压暗到 45% —— 保留"这里堆了东西"的信息，
+  // 但不跟真正在吃 MSPT 的区块抢眼（用户反馈"色块太满"，2026-09-15）
+  if(c.l<=0) col=[Math.round(col[0]*0.45),Math.round(col[1]*0.45),Math.round(col[2]*0.45)];
   octx.fillStyle='rgb('+col[0]+','+col[1]+','+col[2]+')';
   octx.fillRect(c.x-B.minX, c.z-B.minZ, 1, 1);
 }
@@ -263,6 +272,13 @@ function renderBar(){
   for(let i=0;i<4;i++){ c.fillStyle=cols[i]; c.fillRect(i*30,0,30,12); }
 }
 
+function renderBands(){
+  const el=document.getElementById('bandtext');
+  if(!el) return;
+  el.innerHTML='色块阈值（按本图分布自适应）：≤'+BANDS[0]+' 绿 · ≤'+BANDS[1]+' 黄 · ≤'+BANDS[2]
+    +' 橘 · >'+BANDS[2]+' 红；<span style="color:#5a5a66">不会被 tick 的区块已压暗</span>';
+}
+
 canvas.addEventListener('wheel',e=>{
   e.preventDefault();
   const mx=e.clientX,my=e.clientY,f=e.deltaY<0?1.15:1/1.15;
@@ -361,7 +377,7 @@ DATA.top.forEach((t,i)=>{
 }
 
 window.addEventListener('resize',()=>{resize();fit();});
-resize(); fit(); renderBar();
+resize(); fit(); renderBar(); renderBands();
 }
 </script>
 </body>
