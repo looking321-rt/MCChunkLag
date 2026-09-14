@@ -461,17 +461,15 @@ def test_item_stack_counting():
     # 直接喂 bytes 会静默数出 0（踩过一次：bytes 没有 .get，Level 分支全落空）
     parsed = _nbt.parse_nbt(items_nbt([64, 64, 1]))
     c = factors.analyze_chunk(parsed)
-    check("掉落物按物品个数计入因子", c["entities_item"] == 129, str(c["entities_item"]))
-    check("item_counts 返回 (堆数, 个数)",
-          factors.item_counts(parsed) == (3, 129),
-          str(factors.item_counts(parsed)))
+    check("掉落物按物品个数计入因子（3 堆 64+64+1 = 129）", c["entities_item"] == 129,
+          str(c["entities_item"]))
 
     # 1.20.5+ 字段小写化：item: {id, count}
     small = _nbt.parse_nbt(enc_compound(C({"Level": C({"entities": L(10, [
         C({"id": S("minecraft:item"),
            "item": C({"id": S("minecraft:stone"), "count": I(16)})})])})})))
-    check("新版小写 count 也认", factors.item_counts(small) == (1, 16),
-          str(factors.item_counts(small)))
+    check("新版小写 count 也认", factors.analyze_chunk(small)["entities_item"] == 16,
+          str(factors.analyze_chunk(small)["entities_item"]))
     check("读不到 Count → 按 1 个算",
           factors.item_stack_size({"Item": {"id": "minecraft:stone"}}) == 1, "")
     check("非掉落物实体不计堆叠数",
@@ -482,8 +480,7 @@ def test_item_stack_counting():
     hot = dict(zero)
     hot["entities_item"] = 384
     hot["entities_hostile"] = 1                       # 384 + 3 = 387 分
-    stats = {(1, -4): {"stacks": 6, "items": 384}}
-    res = types.SimpleNamespace(chunk_entries={(1, -4): hot, (0, 0): zero}, item_stats=stats)
+    res = types.SimpleNamespace(chunk_entries={(1, -4): hot, (0, 0): zero})
     d = mapdata.build_map_data(res, top_n=5)
     check("地图数据不再有掉落物明细字段",
           not any(k in d for k in ("items", "top_items", "item_total", "item_stacks",

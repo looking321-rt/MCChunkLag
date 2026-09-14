@@ -278,25 +278,6 @@ def has_redstone_kit(nbt_dict):
     return False
 
 
-def item_counts(nbt_dict):
-    """
-    区块里的掉落物统计：返回 (堆数, 物品总个数)。
-
-    只数 id 为 `item` 的实体（经验球不算掉落物）。供地图上「按具体数目」标注用 ——
-    因子计数里 entities_item 已经按个数算，这里额外给出堆数，两者都展示。
-    """
-    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
-    if not isinstance(level, dict):
-        level = nbt_dict or {}
-    stacks = items = 0
-    for entity in _extract_entities(level):
-        if _entity_id(entity) != "item":
-            continue
-        stacks += 1
-        items += item_stack_size(entity)
-    return stacks, items
-
-
 def analyze_chunk(nbt_dict):
     """
     分析一个区块，返回 {factor_key: count}。
