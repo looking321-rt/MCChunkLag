@@ -69,7 +69,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
   <button class="btn" id="reset">适配视图</button>
   <div id="regionlegend" style="margin-top:6px;font-size:11px;line-height:1.7;"></div>
-  <div id="hint">着色按卡顿分(启发式)；红块=最卡 TOP；悬停/点击看该区块因子明细（掉落物按物品个数计，一堆 64 个记 64）。非真实 mspt。</div>
+  <div id="hint">着色按<b>基础分</b>（该区块若被加载会有多贵）；TOP 与悬停里的<b>有效分</b>＝基础分×加载系数（常加载区×2 · 玩家加载区×1 · 其余×0＝根本不会被 tick）。分值单位 0.01；非真实 mspt。</div>
 </div>
 
 <div id="coordbar" class="card">
@@ -88,7 +88,7 @@ _TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div id="arrow" class="card">
-  <h2>🔴 最卡 TOP 区块</h2><div id="toplist"></div>
+  <h2>🔴 最卡 TOP 区块（按有效分）</h2><div id="toplist"></div>
 </div>
 <div id="tooltip"></div>
 
@@ -294,11 +294,13 @@ canvas.addEventListener('mousemove',e=>{
   const cz=Math.floor((e.clientY-offY)/scale+B.minZ);
   const c=chunks.get(cx*100000+cz);
   hover=c? {x:cx,z:cz} : null;
-  document.getElementById('cmouse').textContent=`方块(${bcx(cx)}, ${bcz(cz)})${c? ' · 评分 '+c.s : ''}`;
+  document.getElementById('cmouse').textContent=`方块(${bcx(cx)}, ${bcz(cz)})${c? ' · 基础分 '+c.s+(c.l>0? ' · 有效分 '+c.e : ' · 未加载') : ''}`;
   const tip=document.getElementById('tooltip');
   if(c){
-    let html=`<b>方块 (${bcx(cx)}, ${bcz(cz)})</b><br>区块 (${cx}, ${cz}) · 评分 <b style="color:#f38ba8">${c.s}</b>`;
-    // 掉落物（entities_item）与其它因子一视同仁，都从因子列表里读（按物品个数计）
+    let html=`<b>方块 (${bcx(cx)}, ${bcz(cz)})</b><br>区块 (${cx}, ${cz}) · 基础分 <b style="color:#f38ba8">${c.s}</b>`
+      + (c.l>0? ` · 有效分 <b style="color:#fab387">${c.e}</b>${c.l>1? '（常加载×2）':'（玩家区×1）'}`
+             : ' · <span style="color:#7f849c">未加载（不产生 MSPT）</span>');
+    // 掉落物（entities_item）与其它因子一视同仁，都从因子列表里读（按「堆」计）
     const keys=Object.keys(c.f);
     html += keys.length? '<br>'+keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`).join(' · ') : '<br>无卡顿因子';
     tip.innerHTML=html; tip.style.display='block';
@@ -312,7 +314,8 @@ function updateDetail(cx,cz){
   const sd=document.getElementById('sdetail');
   if(c){
     const keys=Object.keys(c.f);
-    sd.textContent = '选中 方块('+bcx(cx)+','+bcz(cz)+') · 区块('+cx+','+cz+') · 评分 '+c.s
+    sd.textContent = '选中 方块('+bcx(cx)+','+bcz(cz)+') · 区块('+cx+','+cz+') · 基础分 '+c.s
+      + (c.l>0? ' · 有效分 '+c.e : ' · 未加载')
       + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):'');
   } else sd.textContent='';
 }
@@ -331,9 +334,9 @@ function zoomAround(mx,my,f){
       document.getElementById('pinfo').innerHTML =
         `玩家 方块(${Math.round(p.blockX)}, ${Math.round(p.blockZ)}) · 区块(${p.chunkX},${p.chunkZ})<br>`+
         `模拟距离 ${p.sim_dist} · 加载区 ${p.load_width}×${p.load_width}区块 · 显示 ${DATA.total} / 全部 ${DATA.total_all}`;
-      document.getElementById('total').textContent='显示区块: '+DATA.total;
+      document.getElementById('total').textContent=`显示区块: ${DATA.total} · 会被 tick: ${DATA.loaded}`;
     } else {
-      document.getElementById('total').textContent='区块数: '+DATA.total;
+      document.getElementById('total').textContent=`区块数: ${DATA.total} · 会被 tick: ${DATA.loaded}`;
     }
     const rl=document.getElementById('regionlegend');
     if(DATA.regions && DATA.regions.length){
@@ -344,12 +347,18 @@ function zoomAround(mx,my,f){
     }
 
 const tl=document.getElementById('toplist');
+if(DATA.top.length){
 DATA.top.forEach((t,i)=>{
   const r=document.createElement('div'); r.className='row';
-  r.innerHTML=`<span class="rank">${i+1}.</span>方块(${bcx(t.x)}, ${bcz(t.z)}) · 区块(${t.x}, ${t.z}) 评分 <b>${t.s}</b>`;
+  r.innerHTML=`<span class="rank">${i+1}.</span>方块(${bcx(t.x)}, ${bcz(t.z)}) · 区块(${t.x}, ${t.z}) `
+    + `<span class="n">有效 ${t.e}</span> <span style="color:#7f849c">(基础 ${t.s})</span>`;
   r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale; selected=t; render(); updateDetail(t.x,t.z); };
   tl.appendChild(r);
 });
+} else {
+  tl.innerHTML='<div style="font-size:11px;color:#7f849c">本维度当前没有正在被 tick 的区块<br>'
+    + '（玩家不在该维度，也没有常加载区 —— 不会产生 MSPT）</div>';
+}
 
 window.addEventListener('resize',()=>{resize();fit();});
 resize(); fit(); renderBar();

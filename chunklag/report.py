@@ -65,7 +65,8 @@ def render_text(result, top_n=10):
                            for k, v in counts.items() if v > 0)
         lines.append("%2d. (%d, %d)  评分=%d  [%s]" % (rank, cx, cz, score, reasons))
     lines.append("")
-    lines.append("说明: 评分=Σ(因子计数×经验权重)，是启发式离线估算，非 mspt 实测。")
+    lines.append("说明: 评分=Σ(因子计数×经验权重)，权重以 0.01 为单位（600=6.00/个），启发式离线估算，非 mspt 实测。")
+    lines.append("     报告内一律是**基础分**（不受加载状态影响）；地图 HTML 另给有效分=基础分×加载系数。")
     lines.append("     对比各区块相对高低即可，spark 需连运行中服务端才能测真实 mspt。")
     return "\n".join(lines)
 
@@ -138,6 +139,7 @@ def render_html(result, top_n=10):
     else:
         h.append("<p>无区块数据。</p>")
 
-    h.append("<p class='warn'>⚠ 评分为启发式离线估算(Σ计数×权重)，非真实 mspt；仅用于横向对比哪些区块更可能卡。</p>")
+    h.append("<p class='warn'>⚠ 评分为启发式离线估算(Σ计数×权重，权重以 0.01 为单位)，非真实 mspt；"
+             "此处是**基础分**（不受加载状态影响），地图 HTML 另给有效分=基础分×加载系数。</p>")
     h.append("</body></html>")
     return "\n".join(h)

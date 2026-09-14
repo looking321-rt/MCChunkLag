@@ -9,7 +9,7 @@ compound，含 "Entities" 列表（每项是实体 compound，有 id / Pos 等�
 import os
 
 from . import region
-from .factors import _entity_factor, entity_count_value
+from .factors import _entity_factor
 
 
 class EntityPartition:
@@ -58,9 +58,9 @@ class EntityPartition:
         """
         把 (x,z) 区块的实体计数合并进 counts（就地修改并返回）。
 
-        口径与 factors.analyze_chunk 一致：**掉落物按物品个数**（一叠 64 个计 64）。
+        口径与 factors.analyze_chunk 一致：每个实体按 1 计（掉落物按「堆」，不看堆内 Count）。
         """
         for entity in self.entities_at(x, z):
             key = _entity_factor(entity)
-            counts[key] = counts.get(key, 0) + entity_count_value(entity)
+            counts[key] = counts.get(key, 0) + 1
         return counts

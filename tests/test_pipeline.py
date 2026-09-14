@@ -65,7 +65,7 @@ def test_analysis():
     # TOP 榜：最卡的是 (1,0)
     top = res.top_chunks[0]
     check("最卡区块=(1,0)", top[0] == 1 and top[1] == 0, str(top[:2]))
-    check("最卡区块评分=19", top[2] == 19, str(top[2]))
+    check("最卡区块评分=2000（5 怪×300 + 刷怪笼×500）", top[2] == 2000, str(top[2]))
 
     # 下钻：敌对怪物集中在 (1,0)
     hs = res.factor_stats['entities_hostile']
@@ -435,14 +435,13 @@ def test_dimension_scoping_and_full_map():
 
 
 def test_item_stack_counting():
-    """掉落物按**具体物品个数**算，且与其它因子一视同仁（2026-09-14 用户反馈）。
+    """掉落物按**堆**计、且权重极低（2026-09-15 用户拍板「800~1000 掉落物也不怎么卡」）。
 
-    实测依据（用户的模组测试地图）：存档里 39 个 item 实体实际装着 **2496 个物品**
-    （每堆 64 个），只数"有几个实体"会把 384 个物品的区块记成 6 —— 用户说的"大量掉落物"
-    就是这个意思，所以计数按 Count 之和。
-    2026-09-15 用户第二轮反馈：**不要再单独标注**（色块上的黄字个数、右侧「掉落物 TOP」榜）
-    —— 掉落物只作为普通因子（entities_item）出现在悬停 tooltip / 底部明细里，
-    因此地图数据里不再有 items/top_items/item_total 这些明细字段。
+    机制依据（MC 服务端 tick）：一堆掉落物 = **一个 item 实体**（同格同物品自动合并，≤64），
+    实体 tick 只做重力/碰撞/合并/拾取判定，而且 6000 tick（5 分钟）后消失 —— 所以
+    **物品个数不代表 tick 开销，堆数（实体数）才是**，且权重只有 3/堆（漏斗 600/个）。
+    2026-09-14~15 的旧口径是"按物品个数"（一叠 64 个计 64 分），会把 384 个物品的区块
+    顶进最卡 TOP —— 与实测体感不符，已废弃，勿退回。
     """
     import types
 
@@ -457,47 +456,73 @@ def test_item_stack_counting():
                       for n in counts])
         return enc_compound(C({"Level": C({"xPos": I(0), "zPos": I(0), "entities": ents})}))
 
-    # analyze_chunk / item_counts 收的是**解析后的 NBT dict**（不是原始字节）——
+    # analyze_chunk 收的是**解析后的 NBT dict**（不是原始字节）——
     # 直接喂 bytes 会静默数出 0（踩过一次：bytes 没有 .get，Level 分支全落空）
     parsed = _nbt.parse_nbt(items_nbt([64, 64, 1]))
     c = factors.analyze_chunk(parsed)
-    check("掉落物按物品个数计入因子（3 堆 64+64+1 = 129）", c["entities_item"] == 129,
+    check("3 个 item 实体 = 3 堆（不看堆里的 Count）", c["entities_item"] == 3,
           str(c["entities_item"]))
 
-    # 1.20.5+ 字段小写化：item: {id, count}
+    # 1.20.5+ 字段小写化：item: {id, count} —— 实体类型只看 id，同样按 1 堆计
     small = _nbt.parse_nbt(enc_compound(C({"Level": C({"entities": L(10, [
         C({"id": S("minecraft:item"),
            "item": C({"id": S("minecraft:stone"), "count": I(16)})})])})})))
-    check("新版小写 count 也认", factors.analyze_chunk(small)["entities_item"] == 16,
+    check("新版小写字段同样按堆计", factors.analyze_chunk(small)["entities_item"] == 1,
           str(factors.analyze_chunk(small)["entities_item"]))
-    check("读不到 Count → 按 1 个算",
-          factors.item_stack_size({"Item": {"id": "minecraft:stone"}}) == 1, "")
-    check("非掉落物实体不计堆叠数",
-          factors.entity_count_value({"id": "minecraft:zombie"}) == 1, "")
+    # 经验球与掉落物同档（都是实体 tick 极轻的那类）
+    orb = _nbt.parse_nbt(enc_compound(C({"Level": C({"entities": L(10, [
+        C({"id": S("minecraft:experience_orb")})])})})))
+    check("经验球也归 entities_item",
+          factors.analyze_chunk(orb)["entities_item"] == 1, "")
 
-    # 地图数据：掉落物只走因子（entities_item），不再有单独明细/榜单字段
+    # 权重档位护栏（防止将来有人把掉落物权重改回高位）
+    w_item = factors.FACTOR_WEIGHTS["entities_item"]
+    check("100 堆掉落物（6000+ 个物品）仍比单个漏斗轻",
+          100 * w_item < factors.FACTOR_WEIGHTS["be_hopper"],
+          "%d×100 vs %d" % (w_item, factors.FACTOR_WEIGHTS["be_hopper"]))
+    check("单堆掉落物比单个动物还低一个量级",
+          10 * w_item < factors.FACTOR_WEIGHTS["entities_animal"],
+          "%d×10 vs %d" % (w_item, factors.FACTOR_WEIGHTS["entities_animal"]))
+    check("漏斗与箱子分开计档（每 tick 扫 vs 静态）",
+          factors.FACTOR_WEIGHTS["be_hopper"] > 10 * factors.FACTOR_WEIGHTS["be_container"],
+          "%d vs %d" % (factors.FACTOR_WEIGHTS["be_hopper"],
+                        factors.FACTOR_WEIGHTS["be_container"]))
+
+    # 双层分：基础分 s 不受加载影响（着色用），有效分 e = s × 加载系数（排序用）
     zero = {k: 0 for k in factors.FACTOR_WEIGHTS}
     hot = dict(zero)
-    hot["entities_item"] = 384
-    hot["entities_hostile"] = 1                       # 384 + 3 = 387 分
+    hot["entities_item"] = 16                          # 16 堆掉落物
+    hot["be_hopper"] = 2                               # 2 个漏斗
     res = types.SimpleNamespace(chunk_entries={(1, -4): hot, (0, 0): zero})
-    d = mapdata.build_map_data(res, top_n=5)
-    check("地图数据不再有掉落物明细字段",
-          not any(k in d for k in ("items", "top_items", "item_total", "item_stacks",
-                                   "item_chunks")),
-          str(sorted(d)))
-    check("掉落物个数以因子形式进图",
-          [c2 for c2 in d["chunks"] if c2["x"] == 1][0]["f"].get("entities_item") == 384,
-          str([c2 for c2 in d["chunks"] if c2["x"] == 1]))
-    check("评分把掉落物个数算进去",
-          [c2 for c2 in d["chunks"] if c2["x"] == 1][0]["s"] == 387,
-          str([c2 for c2 in d["chunks"] if c2["x"] == 1]))
+    d = mapdata.build_map_data(res, top_n=5, load_coefs={(1, -4): 2.0})
+    c1 = [x for x in d["chunks"] if x["x"] == 1][0]
+    c0 = [x for x in d["chunks"] if x["x"] == 0][0]
+    expect_s = 16 * w_item + 2 * factors.FACTOR_WEIGHTS["be_hopper"]
+    check("基础分 = Σ(计数×权重)", c1["s"] == expect_s, "%s vs %s" % (c1["s"], expect_s))
+    check("常加载区有效分 = 基础分×2", c1["e"] == expect_s * 2 and c1["l"] == 2.0,
+          "%s / l=%s" % (c1["e"], c1["l"]))
+    check("未被 tick 的区块有效分=0（基础分仍保留）",
+          c0["e"] == 0 and c0["l"] == 0, "%s / l=%s" % (c0["e"], c0["l"]))
+    check("TOP 只收有效分>0 的区块",
+          [ (t["x"], t["z"]) for t in d["top"] ] == [(1, -4)], str(d["top"]))
+    check("is_loaded 计数 = 会被 tick 的区块数", d["loaded"] == 1, str(d["loaded"]))
 
-    scoped = mapdata.build_union_map(res, (8.0, 64.0, 8.0, "minecraft:overworld"), 0, [],
-                                     top_n=5, union_only=True)
-    check("scoped 裁剪后同样没有掉落物明细",
-          not any(k in scoped for k in ("items", "top_items", "item_total")),
-          str(sorted(scoped)))
+    # 无加载信息（load_coefs=None）时退化为旧行为：有效分 == 基础分
+    d2 = mapdata.build_map_data(res, top_n=5)
+    check("不做加载判定时 e == s",
+          all(x["e"] == x["s"] for x in d2["chunks"]), "")
+
+    # 端到端：build_union_map 按「常加载×2 / 玩家区×1 / 其余×0」给系数
+    res3 = types.SimpleNamespace(chunk_entries={(0, 0): dict(hot), (1, 1): dict(hot),
+                                                (5, 5): dict(hot)})
+    dm = mapdata.build_union_map(res3, (8.0, 64.0, 8.0, "minecraft:overworld"), 1,
+                                 [("spawn", "出生点", {(0, 0)})], top_n=5)
+    by = {(x["x"], x["z"]): x for x in dm["chunks"]}
+    check("常加载区块系数 2（优先于玩家区）", by[(0, 0)]["l"] == 2.0, str(by[(0, 0)]))
+    check("玩家模拟区内系数 1", by[(1, 1)]["l"] == 1.0, str(by[(1, 1)]))
+    check("两处都不在 → 不会被 tick（系数 0）", by[(5, 5)]["l"] == 0.0, str(by[(5, 5)]))
+    check("有效分>0 的区块 = 会被 tick 的两个",
+          dm["loaded"] == 2 and len(dm["top"]) == 2, "%s / %s" % (dm["loaded"], len(dm["top"])))
 
     # 端到端：真存档口径 → 地图 HTML 里掉落物与其它因子同口径展示
     res2 = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
@@ -509,6 +534,8 @@ def test_item_stack_counting():
     check("HTML 掉落物随因子列表展示（不再单独成行）",
           "keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`)" in txt and "'entities_item'" not in txt,
           "")
+    check("HTML 标注双层分（基础分/有效分）",
+          "基础分" in txt and "有效分" in txt and "加载系数" in txt, "")
 
 
 if __name__ == "__main__":

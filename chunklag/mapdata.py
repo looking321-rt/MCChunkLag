@@ -5,9 +5,10 @@
 结构：
 {
   "bounds": {"minX", "maxX", "minZ", "maxZ"},   # 区块坐标范围
-  "q50": n, "q90": n,                            # 评分分位数（用于着色分档）
-  "chunks": [{"x", "z", "s", "f": {factor_key:count}}],  # 每区块（f 只含非零）
-  "top": [{"x", "z", "s"}],                      # 最卡 TOP 区块
+  "q50": n, "q90": n,                            # 基础分分位数（用于着色分档）
+  "chunks": [{"x", "z", "s", "e", "f": {factor_key:count}}],  # s=基础分 e=有效分，f 只含非零
+  "top": [{"x", "z", "s", "e"}],                 # 最卡 TOP（**按有效分 e 排序**）
+  "loaded": n,                                   # 本图范围内会被 tick 的区块数
 }
 """
 import types
@@ -15,11 +16,24 @@ import types
 from .factors import chunk_score
 
 
-def build_map_data(result, top_n=20):
+def build_map_data(result, top_n=20, load_coefs=None):
+    """
+    构建地图数据。**每个区块两个分**（2026-09-15 用户拍板「双层分」）：
+
+    - `s` 基础分 = Σ(计数 × 权重) —— "这个区块若被加载会有多贵"，**不受加载状态影响**。
+      地图着色用它，保证"哪里堆了东西"的信息不丢（全按有效分会把 87% 的图涂灰）。
+    - `e` 有效分 = s × 加载系数 —— "现在真正在吃 MSPT 多少"。TOP 榜/排序用它。
+      区块还带 `l`（加载系数本身：2 常加载 / 1 玩家区 / 0 不会被 tick），供前端区分
+      "已加载但确实没东西"（s=0,l>0）与"根本没在加载"（l=0）。
+
+    load_coefs：{(cx,cz): 系数}；None = 不做加载判定（全部按 1.0，等价旧行为）。
+      常加载区（出生点/forceload/FTB 常加载/成对传送门装置/末影珍珠加载器）= 2.0； 
+      玩家模拟区内 = 1.0；其余 = 0.0 —— 这些区块**根本不会被 tick**，不产生 MSPT。
+    """
     entries = result.chunk_entries
     if not entries:
         return {"bounds": None, "q50": 0, "q90": 0, "chunks": [], "top": [],
-                "total": 0}
+                "total": 0, "loaded": 0}
 
     xs = [k[0] for k in entries]
     zs = [k[1] for k in entries]
@@ -27,28 +41,41 @@ def build_map_data(result, top_n=20):
 
     chunks = []
     scores = []
+    loaded = 0
     for (x, z), counts in entries.items():
         s = chunk_score(counts)
+        coef = _coef_of(load_coefs, (x, z))
+        if coef > 0:
+            loaded += 1
         scores.append(s)
         f = {k: v for k, v in counts.items() if v > 0}
-        chunks.append({"x": x, "z": z, "s": s, "f": f})
+        chunks.append({"x": x, "z": z, "s": s, "e": s * coef, "l": coef, "f": f})
 
     scores.sort()
     q50 = scores[len(scores) // 2] if scores else 0
     q90 = scores[int(len(scores) * 0.9)] if scores else 999
 
-    # TOP 榜只收有卡顿因子的区块：0 分区块上榜会被前端画成红块，
-    # 看起来像"无卡顿区域被红色色块覆盖"（2026-09-12 用户反馈；并集地图里非零区块往往
-    # 少于 top_n，旧逻辑会把一堆 0 分区块顶进榜）。
-    # 同分时按区块坐标定序：并列区块很多（如多个 9 分）时，仅按分排序会因字典序不稳定
-    # 让某次上榜的区块下次掉出榜，看起来像"热点随机消失"。
-    ranked = [(k, v) for k, v in entries.items() if chunk_score(v) > 0]
-    ranked.sort(key=lambda kv: (-chunk_score(kv[1]), kv[0][0], kv[0][1]))
-    top = [{"x": x, "z": z, "s": chunk_score(c)} for (x, z), c in ranked[:top_n]]
+    # TOP 榜只收**有效分 > 0** 的区块：0 分区块上榜会被前端画成红块，看起来像
+    # "无卡顿区域被红色色块覆盖"（2026-09-12 用户反馈）；新的加载系数下，
+    # 不在加载范围（不会被 tick）的区块有效分本来就是 0，自然不上榜。
+    ranked = [(k, v) for k, v in entries.items()
+              if chunk_score(v) * _coef_of(load_coefs, k) > 0]
+    ranked.sort(key=lambda kv: (-chunk_score(kv[1]) * _coef_of(load_coefs, kv[0]),
+                                kv[0][0], kv[0][1]))
+    top = [{"x": x, "z": z, "s": chunk_score(c),
+            "e": chunk_score(c) * _coef_of(load_coefs, (x, z))}
+           for (x, z), c in ranked[:top_n]]
 
     data = {"bounds": bounds, "q50": q50, "q90": q90,
-            "chunks": chunks, "top": top, "total": len(chunks)}
+            "chunks": chunks, "top": top, "total": len(chunks), "loaded": loaded}
     return data
+
+
+def _coef_of(load_coefs, key):
+    """区块加载系数：None = 不判定（按 1.0）；表里没有 = 未被 tick（0.0）。"""
+    if load_coefs is None:
+        return 1.0
+    return load_coefs.get(key, 0.0)
 
 
 # 因子 key → 中文名（供前端 tooltip / 图例）
@@ -106,24 +133,29 @@ def build_union_map(result, player_xyz, sim_dist, regions, top_n=20, union_only=
 
     entries = dict(result.chunk_entries)
     data_player = None
+    # 加载系数（2026-09-15 用户拍板）：常加载区 ×2（永远在 tick）、玩家模拟区 ×1（仅在玩家
+    # 附近 tick）、两处都不在 ×0（根本不会被 tick，不产生 MSPT —— 实测图里这类占 ~87%）。
+    load_coefs = {}
+    for _t, _l, cs in regions:
+        for c in cs:
+            load_coefs[c] = 2.0
     if player_xyz is not None:
         px, _py, pz = player_xyz[0], player_xyz[1], player_xyz[2]
         pcx = int(math.floor(px / 16))
         pcz = int(math.floor(pz / 16))
         s = sim_dist
+        for dx in range(-s, s + 1):
+            for dz in range(-s, s + 1):
+                load_coefs.setdefault((pcx + dx, pcz + dz), 1.0)
         data_player = {
             "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
             "sim_dist": s, "load_width": 2 * s + 1,
         }
         if union_only:
-            union = {(pcx + dx, pcz + dz) for dx in range(-s, s + 1)
-                     for dz in range(-s, s + 1)}
-            for _t, _l, cs in regions:
-                union |= set(cs)
-            entries = {k: v for k, v in entries.items() if k in union}
+            entries = {k: v for k, v in entries.items() if k in load_coefs}
 
     mock = types.SimpleNamespace(chunk_entries=entries)
-    data = build_map_data(mock, top_n=top_n)
+    data = build_map_data(mock, top_n=top_n, load_coefs=load_coefs)
     if data_player:
         data["player"] = data_player
     data["regions"] = [{"type": t, "label": l, "chunks": sorted(cs)}

@@ -9,21 +9,32 @@
 factor key = 大类(entities/be) + 子类。chunk_score = Σ(count × weight)。
 """
 # 因子定义（用于报告分组展示 + 权重）
+#
+# 权重口径（2026-09-15 重做，用户拍板「掉落物 800~1000 个也不怎么卡」）：
+#   **权重以 0.01 为最小单位**（600 = 6.00 基准分/个），值越大 = 每 tick 干活越多。
+#   分档依据 = MC 服务端 tick 循环里各东西的实际开销：
+#     · 每 tick 必做（漏斗每 tick 扫上方物品；刷怪笼持续尝试生成；红石元件海量方块更新）
+#     · 有 AI/寻路（怪 > 村民 > 动物）
+#     · 静态/条件 tick（箱子不 tick、熔炉只在燃烧时 tick、红石自更新类只在状态变化时动）
+#     · 极轻（**掉落物按「堆」计**：同格同物品自动合并成一个实体，tick 只做重力/碰撞/拾取，
+#       且 6000 tick=5 分钟后消失 —— 所以 3 分/堆，1000 个物品≈16 堆≈48 分，几乎不影响排序）
+#   ⚠️ 这些数字是**待校准的经验值**：拿到真实卡顿点（spark/体感）后只改这张表即可。
 FACTOR_GROUPS = [
     ("实体(entities)", [
-        ("entities_hostile", "敌对怪物", 3),
-        ("entities_villager", "村民", 2),
-        ("entities_vehicle", "载具/矿车", 2),
-        ("entities_animal", "动物", 1),
-        ("entities_item", "掉落物/经验球", 1),
-        ("entities_other", "其它实体", 1),
+        ("entities_hostile", "敌对怪物", 300),
+        ("entities_villager", "村民", 250),
+        ("entities_vehicle", "载具/矿车", 150),
+        ("entities_animal", "动物", 100),
+        ("entities_other", "其它实体", 50),
+        ("entities_item", "掉落物/经验球(按堆)", 3),
     ]),
     ("方块实体(block_entities)", [
-        ("be_spawner", "刷怪笼", 4),
-        ("be_container", "容器(箱/漏斗/潜影盒)", 2),
-        ("be_redstone", "红石自更新(活塞/音符/指令块)", 2),
-        ("be_furnace", "熔炉/机器", 2),
-        ("be_other", "其它方块实体", 1),
+        ("be_hopper", "漏斗(每tick扫)", 600),
+        ("be_spawner", "刷怪笼", 500),
+        ("be_redstone", "红石自更新(活塞/音符/指令块)", 300),
+        ("be_furnace", "熔炉/机器", 50),
+        ("be_container", "容器(箱/桶/潜影盒，静态)", 30),
+        ("be_other", "其它方块实体", 50),
     ]),
 ]
 
@@ -48,12 +59,15 @@ _ANIMAL = {
     "turtle", "villager", "wandering_trader", "trader_llama",
 }
 
-# 容器方块实体
+# 容器方块实体（**静态**：箱子/桶/潜影盒不每 tick 干活，只有被比较器读时才醒）
 _CONTAINER = {
-    "chest", "barrel", "hopper", "shulker_box", "trapped_chest",
-    "minecraft:chest", "minecraft:barrel", "minecraft:hopper",
+    "chest", "barrel", "shulker_box", "trapped_chest",
+    "minecraft:chest", "minecraft:barrel",
     "minecraft:shulker_box", "minecraft:trapped_chest",
 }
+
+# 漏斗（**每 tick** 搜索上方物品实体 + 尝试传输，是经典 MSPT 大户，单独一档）
+_HOPPER = {"hopper", "minecraft:hopper"}
 
 # 红石自更新类方块实体
 _REDSTONE = {
@@ -111,33 +125,6 @@ def _entity_id(entity):
     return _norm_id(eid)
 
 
-def item_stack_size(entity):
-    """
-    掉落物实体里的**物品个数**（堆叠数）—— MC 里一叠掉落物是**一个实体**带 Count。
-
-    存档实测（1.20.1 模组测试地图）：39 个 item 实体实际装着 **2496 个物品**（每堆 64），
-    所以"有几个掉落物"必须看 Count 之和，只看实体个数会把 384 个物品的一堆算成 1。
-    字段：1.20.1 是 `Item: {id, Count, tag}`；1.20.5+ 小写化 `item: {id, count}`。
-    读不到 Count（含经验球这类没有 Item 的实体）按 1 个算。
-    """
-    for key in ("Item", "item"):
-        it = entity.get(key)
-        if isinstance(it, dict):
-            for ck in ("Count", "count"):
-                v = it.get(ck)
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-                    return int(v)
-            return 1
-    return 1
-
-
-def entity_count_value(entity):
-    """该实体在因子计数里占多少：**掉落物按物品个数**（一叠 64 个 = 64），其余 1 个实体 = 1。"""
-    if _entity_factor(entity) == "entities_item":
-        return item_stack_size(entity)
-    return 1
-
-
 def _entity_factor(entity):
     """单个实体 → factor key（无则 None）。"""
     eid = _entity_id(entity)
@@ -161,6 +148,8 @@ def _be_factor(be):
         return "be_other"
     if bid in ("spawner", "mob_spawner"):
         return "be_spawner"
+    if bid in _HOPPER:
+        return "be_hopper"
     if bid in _CONTAINER:
         return "be_container"
     if bid in _REDSTONE:
@@ -283,7 +272,8 @@ def analyze_chunk(nbt_dict):
     分析一个区块，返回 {factor_key: count}。
     兼容：有 Level 包裹（1.18 前） vs 平铺（1.20.5+）。
 
-    计数口径：**掉落物按物品个数**（一叠 64 个计 64，见 item_stack_size），其余实体/方块实体按个数。
+    计数口径：每个实体/方块实体按 **1 个**计；掉落物是「一堆 = 一个 item 实体」，
+    所以**按堆计**（不再看堆里的 Count —— 物品个数不影响服务端 tick 开销）。
     """
     level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
     if not isinstance(level, dict):
@@ -293,7 +283,7 @@ def analyze_chunk(nbt_dict):
 
     for entity in _extract_entities(level):
         key = _entity_factor(entity)
-        counts[key] = counts.get(key, 0) + entity_count_value(entity)
+        counts[key] = counts.get(key, 0) + 1
 
     for be in _extract_block_entities(level):
         key = _be_factor(be)
@@ -303,7 +293,7 @@ def analyze_chunk(nbt_dict):
 
 
 def chunk_score(counts):
-    """区块卡顿分 = Σ(count × weight)。"""
+    """区块卡顿分 = Σ(count × weight)。权重单位见 FACTOR_GROUPS（600 = 6.00 基准分）。"""
     total = 0
     for key, cnt in counts.items():
         total += cnt * FACTOR_WEIGHTS.get(key, 1)
