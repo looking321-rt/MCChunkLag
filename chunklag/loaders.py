@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 常加载区块识别 —— 找出"非玩家也能保持加载"的区块（出生点/forceload/mod），
-用于与玩家模拟区并集，补全卡顿热力图（MC 加载机制见 Minecraft Wiki）。
+用于在热力图上叠加常加载框（MC 加载机制见 Minecraft Wiki）。
 
 来源：
-  - 出生点 spawn chunks：level.dat 的 SpawnX/Z + 游戏规则 spawnChunkRadius(默认2)
+  - 出生点 spawn chunks：level.dat 的 SpawnX/Z（或新版 spawn.pos）+ spawnChunkRadius(默认2)
+    ⚠ **只有主世界有**这个机制 —— 下界/末地没有出生点常加载，见 collect_regions
   - /forceload：level.dat 的 ForcedChunks（vanilla 强制加载，负载等级31）
   - mod 强制加载：data/chunks.dat(FTB) 的 ForgeForced[*].ModForced[*].Blocks(方块坐标)
 """
@@ -22,21 +23,29 @@ def _world_chunk(x, z):
     return (int(math.floor(x / 16)), int(math.floor(z / 16)))
 
 
+def spawn_chunks_from(sp, radius=2):
+    """由出生点 (x, y, z, dim_id) 展开出生点恒加载区块集合。"""
+    cx, cz = _world_chunk(sp[0], sp[2])
+    return {(cx + dx, cz + dz) for dx in range(-radius, radius + 1)
+            for dz in range(-radius, radius + 1)}
+
+
 def read_spawn_chunks(world_dir, radius=2):
     """
     出生点恒加载区：出生点区块 + 半径 radius（spawnChunkRadius，默认2）。
 
     兼容新布局（26.x 的 `spawn: {pos,dimension}`）与旧布局（`SpawnX/SpawnZ`），
     见 layout.spawn_position。
+
+    ⚠ 这里**不带维度过滤**（纯几何展开，供诊断/回归用）；要不要画到某张图上，
+    由 `collect_regions(dim_id=...)` 决定 —— 出生点恒加载是**主世界专有**机制。
     """
     from . import layout
 
     sp = layout.spawn_position(world_dir)
     if not sp:
         return set()
-    cx, cz = _world_chunk(sp[0], sp[2])
-    return {(cx + dx, cz + dz) for dx in range(-radius, radius + 1)
-            for dz in range(-radius, radius + 1)}
+    return spawn_chunks_from(sp, radius)
 
 
 def read_forced_chunks(world_dir):
@@ -393,15 +402,28 @@ def read_mod_forced(world_dir, expand=1):
     return results
 
 
-def collect_regions(world_dir, spawn_radius=2):
-    """汇总所有常加载区，返回 [(type, label, 区块集合), ...]。"""
+def collect_regions(world_dir, spawn_radius=2, dim_id="minecraft:overworld"):
+    """
+    汇总**指定维度**的常加载区，返回 [(type, label, 区块集合), ...]。
+
+    维度语义（2026-09-14 修正，用户反馈「下界/末地怎么也有出生点常加载区块」）：
+      · **出生点恒加载区只有主世界有** —— MC 的 spawn chunks 是主世界专有机制，
+        下界/末地**没有**（末地只有出生平台/返回门，那都不是常加载）。判断依据是
+        出生点自带的维度字段（新版 `spawn.dimension`；旧版 SpawnX/Z 无该字段 = 主世界）。
+      · vanilla `/forceload` 的 ForcedChunks 记在 level.dat（主世界的表）→ 只画主世界。
+      · mod 常加载（FTB chunks.dat 的 ForgeForced）条目**不带维度信息** → 保守只画主世界，
+        避免在下界/末地图上凭空冒出主世界坐标的框。
+    """
     regions = []
-    spawn = read_spawn_chunks(world_dir, spawn_radius)
-    if spawn:
-        regions.append(("spawn", "出生点恒加载区", spawn))
-    forced = read_forced_chunks(world_dir)
-    if forced:
-        regions.append(("forced", "/forceload", forced))
-    for mod, chunks in read_mod_forced(world_dir):
-        regions.append(("mod", "mod常加载:" + mod, chunks))
+    sp = layout.spawn_position(world_dir)
+    if sp and (sp[3] or "minecraft:overworld") == dim_id:
+        spawn = spawn_chunks_from(sp, spawn_radius)
+        if spawn:
+            regions.append(("spawn", "出生点恒加载区", spawn))
+    if dim_id == "minecraft:overworld":
+        forced = read_forced_chunks(world_dir)
+        if forced:
+            regions.append(("forced", "/forceload", forced))
+        for mod, chunks in read_mod_forced(world_dir):
+            regions.append(("mod", "mod常加载:" + mod, chunks))
     return regions

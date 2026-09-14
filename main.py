@@ -8,6 +8,10 @@ CLI 入口：分析一份 MC 存档的区块卡顿原因。
   python main.py <存档目录> --dim all       # 全维度
   python main.py <存档目录> --top 20        # 最卡 TOP N（默认10）
   python main.py <存档目录> --html out.html # 输出 HTML
+  python main.py <存档目录> --dim all --map out.html
+                                            # 每维度一份图（out/主世界/map.html …），左上角可切换
+  python main.py <存档目录> --map out.html --scoped
+                                            # 只画「玩家模拟区 ∪ 常加载区」（默认全量）
 """
 import argparse
 import os
@@ -139,43 +143,85 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0, hook=None):
     return all_results
 
 
-def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10):
+def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10,
+                   scoped=False, nav=None):
     """
-    把某个维度的分析结果渲染成交互地图 HTML（玩家模拟区 ∪ 常加载区）。
+    把某个维度的分析结果渲染成交互地图 HTML。
 
-    返回一行描述文字（供 CLI / 批量扫描打印）。player=None 时自动从存档读玩家位置。
+    **默认全量**（scoped=False）：该维度所有区块都画（2026-09-14 起）；
+    scoped=True 走旧口径「玩家模拟区 ∪ 常加载区」，只画并集内区块。
+
+    维度语义（2026-09-14 修正）：
+      · 常加载区按**本维度**取（loaders.collect_regions(dim_id=...)）—— 出生点恒加载
+        只有主世界有，下界/末地不再冒出主世界坐标的绿框。
+      · 玩家模拟区只在**玩家当前所在维度**才画：早期不分维度，玩家在主世界时下界/末地
+        图上也会画出玩家区块（用户反馈「切换下界也能看到玩家坐标」）。
+    返回一行描述文字（供 CLI / 批量扫描打印）。player=None 时自动从存档读。
     """
     from chunklag.mapview import render_html_map
     from chunklag import mapdata as mapdata_mod
 
     if player is None:
         player = leveldat.read_player_position(world_dir)
-    if player:
-        regions = loaders.collect_regions(world_dir)
-        all_portal = getattr(res, "portal_chunks", None) or set()
-        portal = getattr(res, "portal_loader_chunks", None) or set()
-        # 每装置一个 5×5 框（3×3 完全加载 + 外围 16 lazy）；重叠框合并成一个外接框
-        devs = loaders.merge_region_boxes(loaders.portal_regions(portal)) if portal else []
+    dim_id = getattr(res, "dimension_id", None) or "minecraft:overworld"
+    player_here = None
+    if player and (player[3] or "minecraft:overworld") == dim_id:
+        player_here = player
+
+    regions = loaders.collect_regions(world_dir, dim_id=dim_id)
+    note = ""
+    all_portal = getattr(res, "portal_chunks", None) or set()
+    portal = getattr(res, "portal_loader_chunks", None) or set()
+    devs = loaders.merge_region_boxes(loaders.portal_regions(portal)) if portal else []
+    if all_portal:
         regions.extend(devs)
-        note = ""
-        if all_portal:
-            note += (" | 地狱门: 门区块%d → 常加载框%d; 未成对/无证据%d 已忽略"
-                     % (len(all_portal), len(devs), len(all_portal) - len(portal)))
-        pearls = getattr(res, "pearls", None) or []
-        if pearls:
-            regions.extend(loaders.merge_region_boxes(loaders.pearl_regions(pearls)))
-            note += " | 珍珠: %d 颗 → 强加载区" % len(pearls)
-        data = mapdata_mod.build_union_map(res, player, simdist, regions, top_n=top_n)
-        msg = ("三源并集: 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s%s"
-               % (int(player[0] // 16), int(player[2] // 16), simdist,
-                  2 * simdist + 1, 2 * simdist + 1,
+        note += (" | 地狱门: 门区块%d → 常加载框%d; 未成对/无证据%d 已忽略"
+                 % (len(all_portal), len(devs), len(all_portal) - len(portal)))
+    pearls = getattr(res, "pearls", None) or []
+    if pearls:
+        regions.extend(loaders.merge_region_boxes(loaders.pearl_regions(pearls)))
+        note += " | 珍珠: %d 颗 → 强加载区" % len(pearls)
+
+    data = mapdata_mod.build_union_map(res, player_here, simdist, regions,
+                                       top_n=top_n, union_only=scoped)
+    if player_here:
+        scope = "玩家模拟区∪常加载区" if scoped else "全量"
+        msg = ("%s地图: 区块 %d | 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s%s"
+               % (scope, data["total"], int(player_here[0] // 16), int(player_here[2] // 16),
+                  simdist, 2 * simdist + 1, 2 * simdist + 1,
                   ", ".join(r[1] for r in regions) if regions else "无",
                   note))
     else:
-        data = mapdata_mod.build_map_data(res, top_n=top_n)
-        msg = "无玩家位置记录 → 输出全量地图"
-    render_html_map(data, out_path, top_n=top_n)
+        msg = ("全量地图: 区块 %d | 该维度无玩家记录（或玩家不在本维度）"
+               " | 常加载区: %s%s"
+               % (data["total"],
+                  ", ".join(r[1] for r in regions) if regions else "无",
+                  note))
+    render_html_map(data, out_path, top_n=top_n, nav=nav)
     return msg
+
+
+def dim_nav(items, cur_dir):
+    """
+    维度切换按钮数据（HTML 左上角那个「主世界 / 下界 / 末地」切换条）。
+
+    items = [(维度名, 该维度图的目录)]，cur_dir = 当前这张图所在目录。
+    只有一个维度时返回 None（不出按钮）。href 用相对路径 + URL 编码
+    —— 目录名常含中文（「主世界」），不编码在 file:// 下也能用，但编码后更稳。
+    """
+    import urllib.parse
+
+    if len(items) < 2:
+        return None
+    cur = os.path.abspath(cur_dir)
+    nav = []
+    for name, d in items:
+        rel = os.path.relpath(os.path.join(d, "map.html"), cur_dir)
+        href = "/".join(urllib.parse.quote(p)
+                        for p in rel.replace("\\", "/").split("/"))
+        nav.append({"label": name, "href": href,
+                    "active": os.path.abspath(d) == cur})
+    return nav
 
 
 def main(argv=None):
@@ -191,6 +237,8 @@ def main(argv=None):
                         help="玩家模拟距离(区块)，默认10，决定加载的正方形边长(2s+1)")
     parser.add_argument("--player", nargs=2, type=float, metavar=("X", "Z"),
                         help="手动指定玩家方块坐标X Z（默认自动从存档读玩家位置）")
+    parser.add_argument("--scoped", action="store_true",
+                        help="只画「玩家模拟区 ∪ 常加载区」（旧口径）；默认全量输出该维度所有区块")
     args = parser.parse_args(argv)
 
     world_dir = args.world
@@ -217,13 +265,24 @@ def main(argv=None):
             f.write("\n".join(html_parts))
         print("已输出 HTML: %s" % args.html)
 
-    # HTML 交互地图（取第一个维度/主世界）
+    # HTML 交互地图（单个维度 → 指定路径；--dim all 多维度 → 每维度一个子目录 + 左上角切换按钮）
     if args.map:
-        res = results[0][2]
         player = (args.player[0], 0.0, args.player[1], "minecraft:overworld") if args.player else None
-        print(render_map_for(world_dir, res, args.map, simdist=args.simdist,
-                             player=player, top_n=args.top))
-        print("已输出 HTML 交互地图: %s" % args.map)
+        if len(results) > 1:
+            base = os.path.splitext(args.map)[0]
+            items = [(dim_name, os.path.join(base, dim_name))
+                     for _rdir, dim_name, _res, _d in results]
+            for (_rdir, _dim_name, res, _d), (_n, out_dir) in zip(results, items):
+                os.makedirs(out_dir, exist_ok=True)
+                print(render_map_for(world_dir, res, os.path.join(out_dir, "map.html"),
+                                     simdist=args.simdist, player=player, top_n=args.top,
+                                     scoped=args.scoped, nav=dim_nav(items, out_dir)))
+            print("已输出 HTML 交互地图: %s（每维度一份，页面左上角可切换）" % base)
+        else:
+            res = results[0][2]
+            print(render_map_for(world_dir, res, args.map, simdist=args.simdist,
+                                 player=player, top_n=args.top, scoped=args.scoped))
+            print("已输出 HTML 交互地图: %s" % args.map)
 
     return 0
 

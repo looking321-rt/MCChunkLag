@@ -25,6 +25,11 @@ _TEMPLATE = """<!DOCTYPE html>
     font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,.4);}
   #panel{top:12px;left:12px;max-width:280px;}
   #panel h1{font-size:14px;margin:0 0 6px;color:#89b4fa;}
+  #dimnav{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 8px;}
+  .dimtab{font-size:11px;line-height:1;padding:4px 9px;border-radius:6px;background:#313244;
+    color:#cdd6f4;text-decoration:none;cursor:pointer;border:1px solid #45475a;}
+  .dimtab:hover{background:#45475a;}
+  .dimtab.active{background:#89b4fa;color:#1e1e2e;font-weight:bold;border-color:#89b4fa;}
   #legend{margin-top:8px;display:flex;align-items:center;gap:6px;font-size:11px;}
   #legend canvas{width:120px;height:12px;display:block;}
   #coordbar{bottom:12px;left:12px;line-height:1.7;min-width:230px;}
@@ -56,6 +61,7 @@ _TEMPLATE = """<!DOCTYPE html>
 
 <div id="panel" class="card">
   <h1>MC 区块卡顿热力图</h1>
+  __NAV__
   <div id="total">区块数: —</div>
   <div id="pinfo"></div>
   <div id="legend"><span>低</span><canvas id="bar" width="120" height="12"></canvas><span>高</span></div>
@@ -320,8 +326,8 @@ function zoomAround(mx,my,f){
       const p=DATA.player;
       document.getElementById('pinfo').innerHTML =
         `玩家 方块(${Math.round(p.blockX)}, ${Math.round(p.blockZ)}) · 区块(${p.chunkX},${p.chunkZ})<br>`+
-        `模拟距离 ${p.sim_dist} · 加载区 ${p.load_width}×${p.load_width}区块 · 已加载 ${DATA.total} / 全部 ${DATA.total_all}`;
-      document.getElementById('total').textContent='已加载区块: '+DATA.total;
+        `模拟距离 ${p.sim_dist} · 加载区 ${p.load_width}×${p.load_width}区块 · 显示 ${DATA.total} / 全部 ${DATA.total_all}`;
+      document.getElementById('total').textContent='显示区块: '+DATA.total;
     } else {
       document.getElementById('total').textContent='区块数: '+DATA.total;
     }
@@ -350,7 +356,30 @@ resize(); fit(); renderBar();
 """
 
 
-def render_html_map(result_or_data, out_path, top_n=20):
+def _nav_html(nav):
+    """
+    左上角维度切换条（nav = [{"label","href","active"}]，见 main.dim_nav）。
+
+    当前维度渲染成高亮 span（不是链接），其余是可点的相对链接 —— 同一世界的
+    每个维度各是一份 map.html，点击即跳转（本地文件，秒开）。
+    """
+    import html as html_mod
+
+    if not nav:
+        return ""
+    parts = ['<div id="dimnav">']
+    for it in nav:
+        label = html_mod.escape(str(it.get("label", "")))
+        if it.get("active"):
+            parts.append('<span class="dimtab active">%s</span>' % label)
+        else:
+            href = html_mod.escape(str(it.get("href", "#")), quote=True)
+            parts.append('<a class="dimtab" href="%s">%s</a>' % (href, label))
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def render_html_map(result_or_data, out_path, top_n=20, nav=None):
     """生成 HTML 交互地图到 out_path。接受 result 或已构建的数据 dict。"""
     if isinstance(result_or_data, dict) and "chunks" in result_or_data:
         data = result_or_data
@@ -358,6 +387,7 @@ def render_html_map(result_or_data, out_path, top_n=20):
         data = mapdata_mod.build_map_data(result_or_data, top_n=top_n)
     labels = mapdata_mod.factor_labels()
     html = (_TEMPLATE
+            .replace("__NAV__", _nav_html(nav))
             .replace("__DATA__", json.dumps(data, ensure_ascii=False))
             .replace("__LABELS__", json.dumps(labels, ensure_ascii=False)))
     with open(out_path, "w", encoding="utf-8") as f:

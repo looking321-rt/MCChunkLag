@@ -22,6 +22,7 @@ tests/real_map_*.html
 # 批量扫描输出（scan.py）
 output/
 tests/_tmp_scan/
+tests/dim_out/
 
 # 编辑器/系统
 .DS_Store

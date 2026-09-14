@@ -348,6 +348,92 @@ def test_mixed_layout_world():
           str(len(only_ow)))
 
 
+def _map_json(path):
+    """从生成的 map.html 里取回内嵌的地图数据 JSON。"""
+    import json
+    import re
+
+    txt = open(path, encoding="utf-8").read()
+    m = re.search(r'<script id="mapdata" type="application/json">(.*?)</script>', txt, re.S)
+    return json.loads(m.group(1))
+
+
+def test_dimension_scoping_and_full_map():
+    """回归（2026-09-14 用户反馈四条）：
+
+    ① 出生点恒加载**只有主世界有** —— MC 的 spawn chunks 是主世界专有机制，
+       下界/末地没有，「下界/末地图上冒出绿框」是 bug；
+    ② 玩家模拟区只在玩家**当前所在维度**画 —— 否则玩家在主世界时，下界图上也会
+       出现主世界坐标的玩家标记；
+    ③ 地图默认**全量**：旧口径只画「玩家模拟区 ∪ 常加载区」，实测那份模组测试存档
+       只画了 441/3762 个区块 → 用户报「18,-58 一堆掉落物识别不出来」；
+    ④ 同世界多维度出图时，每张图左上角带维度切换按钮。
+    """
+    import main as main_mod
+    from chunklag import loaders, scanjob
+    from make_fixture import FAKE_WORLD, MIXED_WORLD, build_mixed_layout_world
+
+    build_mixed_layout_world()
+
+    # ① 常加载区按维度过滤
+    ow_regs = [t for t, _l, _c in loaders.collect_regions(MIXED_WORLD, dim_id="minecraft:overworld")]
+    nw_regs = [t for t, _l, _c in loaders.collect_regions(MIXED_WORLD, dim_id="minecraft:the_nether")]
+    tf_regs = [t for t, _l, _c in loaders.collect_regions(
+        MIXED_WORLD, dim_id="twilightforest:twilight_forest")]
+    check("主世界有出生点恒加载区", "spawn" in ow_regs, str(ow_regs))
+    check("下界没有出生点恒加载区", "spawn" not in nw_regs, str(nw_regs))
+    check("自定义维度没有出生点恒加载区", "spawn" not in tf_regs, str(tf_regs))
+
+    # ②③ 维度过滤 + 全量口径（用 FAKE_WORLD：3 个区块、无出生点、无玩家）
+    res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+    out = os.path.join(ROOT, "tests", "map_dim_test.html")
+    main_mod.render_map_for(FAKE_WORLD, res, out, simdist=0, top_n=5,
+                            player=(8.0, 64.0, 8.0, "minecraft:the_nether"))
+    d = _map_json(out)
+    check("玩家不在本维度 → 地图不标玩家", "player" not in d, str(d.get("player")))
+
+    main_mod.render_map_for(FAKE_WORLD, res, out, simdist=0, top_n=5,
+                            player=(8.0, 64.0, 8.0, "minecraft:overworld"))
+    d = _map_json(out)
+    check("玩家在本维度 → 地图标玩家", bool(d.get("player")), str(d.get("player")))
+    check("默认全量（total == total_all）",
+          d["total"] == d["total_all"] == 3, "%s/%s" % (d["total"], d["total_all"]))
+
+    main_mod.render_map_for(FAKE_WORLD, res, out, simdist=0, top_n=5, scoped=True,
+                            player=(8.0, 64.0, 8.0, "minecraft:overworld"))
+    ds = _map_json(out)
+    check("--scoped 只画玩家模拟区∪常加载区",
+          ds["total"] < ds["total_all"], "%s/%s" % (ds["total"], ds["total_all"]))
+
+    # ④ 维度切换按钮数据
+    nav = main_mod.dim_nav([("主世界", os.path.join(ROOT, "tests", "navx", "主世界")),
+                            ("下界", os.path.join(ROOT, "tests", "navx", "下界"))],
+                           os.path.join(ROOT, "tests", "navx", "下界"))
+    check("多维度 → 出 2 个切换项", bool(nav) and len(nav) == 2, str(nav))
+    check("当前维度高亮",
+          [n["label"] for n in nav if n["active"]] == ["下界"], str(nav))
+    check("兄弟维度是相对链接且已编码",
+          nav[0]["href"] == "../%E4%B8%BB%E4%B8%96%E7%95%8C/map.html", str(nav[0]))
+    check("单维度 → 不出切换条", main_mod.dim_nav([("主世界", "x")], "x") is None, "")
+
+    # ④′ 端到端：全维度批量扫描 → 每张图都有切换条，且只有主世界图有出生点框
+    outdir = os.path.join(ROOT, "tests", "dim_out")
+    job = scanjob.ScanJob(scanjob.ScanOptions(path=MIXED_WORLD, out=outdir, dim="all",
+                                              simdist=2, top=5))
+    results = [r for r in job.run() if not r.skipped]
+    check("混合布局世界扫出 3 个维度", len(results) == 3, str([r.dim for r in results]))
+    by_dim = {r.dim: r for r in results}
+    check("每个维度各一份 map.html",
+          all(os.path.exists(r.map_path) for r in results), str([r.map_path for r in results]))
+    for r in results:
+        html = open(r.map_path, encoding="utf-8").read()
+        check("「%s」图带维度切换条" % r.dim, 'id="dimnav"' in html, "")
+    spawn_dims = {r.dim for r in results
+                  if any(x["type"] == "spawn" for x in _map_json(r.map_path).get("regions", []))}
+    check("只有主世界图有出生点恒加载框",
+          spawn_dims == {"主世界"}, str(spawn_dims))
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -362,5 +448,6 @@ if __name__ == "__main__":
     test_top_excludes_zero()
     test_new_layout_and_modern_loaders()
     test_mixed_layout_world()
+    test_dimension_scoping_and_full_map()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

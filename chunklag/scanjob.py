@@ -27,7 +27,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from main import analyze_world, find_region_dirs, render_map_for   # noqa: E402
+from main import analyze_world, find_region_dirs, render_map_for, dim_nav   # noqa: E402
 
 from . import leveldat                                              # noqa: E402
 
@@ -361,12 +361,16 @@ class ScanJob:
                 continue
 
             world_scan = time.time() - t_world        # 世界扫描耗时（多维度的行都会带上）
+            # 同一世界的所有维度先算出输出目录：渲染时好生成「左上角维度切换」按钮
+            siblings = [(dn, self._dim_out_dir(item, i, dn))
+                        for _rdir, dn, _res, _d in all_results]
             for _rdir, dim_name, res, _dim_dir in all_results:
                 if self._cancel.is_set():
                     self._mark_cancelled("停止后续维度")
                     break
                 results.append(self._finish_one(item, i, len(plan), dim_name, res,
-                                                 base_seconds=world_scan))
+                                                 base_seconds=world_scan,
+                                                 siblings=siblings))
             if self.was_cancelled:
                 break
 
@@ -378,21 +382,28 @@ class ScanJob:
                     "results": results, "out": os.path.abspath(self.opts.out)})
         return results
 
-    def _finish_one(self, item, world_i, world_n, dim_name, res, base_seconds=0.0):
+    def _dim_out_dir(self, item, world_i, dim_name):
+        """一个「世界 × 维度」的输出目录（渲染与维度切换按钮共用同一份计算）。"""
+        return os.path.join(self.opts.out,
+                            "%02d_%s" % (world_i, safe_name(item.name, "world%d" % world_i)),
+                            safe_name(dim_name, "dim"))
+
+    def _finish_one(self, item, world_i, world_n, dim_name, res, base_seconds=0.0,
+                    siblings=None):
         """
         渲染一个维度的地图 + 文字报告，返回结果条目。
 
         base_seconds = 该世界的扫描耗时（同一世界的每个维度行都带上，外加本维度的渲染耗时）。
         早先只算渲染 → 结果表/汇总里"耗时"显示 0.0s，看起来像没扫（真机 生电 实测踩到）。
+        siblings = [(维度名, 目录)]，同世界其它维度 —— 用来在图左上角生成切换按钮。
         """
         t0 = time.time()
-        out_dir = os.path.join(self.opts.out,
-                               "%02d_%s" % (world_i, safe_name(item.name, "world%d" % world_i)),
-                               safe_name(dim_name, "dim"))
+        out_dir = self._dim_out_dir(item, world_i, dim_name)
         os.makedirs(out_dir, exist_ok=True)
         self._emit({"kind": "phase", "text": "正在生成地图：%s / %s" % (item.name, dim_name)})
         msg = render_map_for(item.world_dir, res, os.path.join(out_dir, "map.html"),
-                             simdist=self.opts.simdist, top_n=self.opts.top)
+                             simdist=self.opts.simdist, top_n=self.opts.top,
+                             nav=dim_nav(siblings or [], out_dir))
         top = res.top_chunks[0] if res.top_chunks else None
         top_txt = "(%d,%d)=%d" % (top[0], top[1], top[2]) if top else "-"
         self._log("   %s：区块 %d | 总卡顿分 %d | 最卡 %s"

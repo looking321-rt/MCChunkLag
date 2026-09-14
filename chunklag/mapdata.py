@@ -40,8 +40,10 @@ def build_map_data(result, top_n=20):
     # TOP 榜只收有卡顿因子的区块：0 分区块上榜会被前端画成红块，
     # 看起来像"无卡顿区域被红色色块覆盖"（2026-09-12 用户反馈；并集地图里非零区块往往
     # 少于 top_n，旧逻辑会把一堆 0 分区块顶进榜）。
+    # 同分时按区块坐标定序：并列区块很多（如多个 9 分）时，仅按分排序会因字典序不稳定
+    # 让某次上榜的区块下次掉出榜，看起来像"热点随机消失"。
     ranked = [(k, v) for k, v in entries.items() if chunk_score(v) > 0]
-    ranked.sort(key=lambda kv: chunk_score(kv[1]), reverse=True)
+    ranked.sort(key=lambda kv: (-chunk_score(kv[1]), kv[0][0], kv[0][1]))
     top = [{"x": x, "z": z, "s": chunk_score(c)} for (x, z), c in ranked[:top_n]]
 
     return {"bounds": bounds, "q50": q50, "q90": q90,
@@ -84,32 +86,45 @@ def build_player_map(result, player_xyz, sim_dist, top_n=20):
     return data
 
 
-def build_union_map(result, player_xyz, sim_dist, regions, top_n=20):
+def build_union_map(result, player_xyz, sim_dist, regions, top_n=20, union_only=False):
     """
-    三源并集地图：玩家模拟区 ∪ 常加载区(出生点/forceload/mod)。
+    「常加载区叠加」地图数据。
 
-    - 玩家模拟区：以玩家区块为中心、边长(2*sim_dist+1)正方形（MC 仿真距离）。
-    - 常加载区：regions 为 [(type,label,区块集合)]（出自 loaders.collect_regions）。
-    只显示并集内区块；regions 用于前端给"常加载区"加彩色边界/标记。
+    **默认全量**（union_only=False，2026-09-14 起）：该维度所有区块都进图，
+    regions（出生点/forceload/mod/传送门/珍珠）只作为**彩色外框**叠加。
+    早期默认只画「玩家模拟区 ∪ 常加载区」，并集之外的区块在地图上**根本不存在** ——
+    用户报「主世界 18,-58 一堆掉落物识别不出来」，实测那份图只有 441/3762 个区块，
+    其它 88% 被裁掉了（同一次反馈还要求下界/末地先直接出全扫描图）。
+    union_only=True 保留旧口径（CLI `--scoped`），用于"只看玩家加载区"的场景。
+
+    - player_xyz：玩家位置 (x, y, z, dim)；**None = 该维度没有玩家**（比如玩家在主世界时看下界），
+      此时不写 player 字段、不画玩家模拟区，但常加载框照画。
+    - regions：[(type, label, 区块集合)]（出自 loaders.collect_regions）。
     """
     import math
-    px, _py, pz = player_xyz[0], player_xyz[1], player_xyz[2]
-    pcx = int(math.floor(px / 16))
-    pcz = int(math.floor(pz / 16))
-    s = sim_dist
 
-    union = {(pcx + dx, pcz + dz) for dx in range(-s, s + 1)
-             for dz in range(-s, s + 1)}
-    for _t, _l, cs in regions:
-        union |= set(cs)
+    entries = dict(result.chunk_entries)
+    data_player = None
+    if player_xyz is not None:
+        px, _py, pz = player_xyz[0], player_xyz[1], player_xyz[2]
+        pcx = int(math.floor(px / 16))
+        pcz = int(math.floor(pz / 16))
+        s = sim_dist
+        data_player = {
+            "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
+            "sim_dist": s, "load_width": 2 * s + 1,
+        }
+        if union_only:
+            union = {(pcx + dx, pcz + dz) for dx in range(-s, s + 1)
+                     for dz in range(-s, s + 1)}
+            for _t, _l, cs in regions:
+                union |= set(cs)
+            entries = {k: v for k, v in entries.items() if k in union}
 
-    entries = {k: v for k, v in result.chunk_entries.items() if k in union}
     mock = types.SimpleNamespace(chunk_entries=entries)
     data = build_map_data(mock, top_n=top_n)
-    data["player"] = {
-        "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
-        "sim_dist": s, "load_width": 2 * s + 1,
-    }
+    if data_player:
+        data["player"] = data_player
     data["regions"] = [{"type": t, "label": l, "chunks": sorted(cs)}
                        for t, l, cs in regions]
     data["total_all"] = len(result.chunk_entries)

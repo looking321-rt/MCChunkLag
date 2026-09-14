@@ -89,11 +89,11 @@ def analyze(chunk_iter, world_name="(未知世界)", data_version=None):
 
     result.factor_stats = factor_stats
 
-    # TOP 榜：按区块卡顿分降序
+    # TOP 榜：按区块卡顿分降序（同分按区块坐标定序，保证榜单稳定可复现）
     # 只收**真正有卡顿因子**的区块：0 分区块不是"最卡"，上了榜会在地图上被画成红块，
     # 看起来就像"无卡顿区域被红色覆盖"（2026-09-12 用户反馈）。
     ranked = [(k, v) for k, v in result.chunk_entries.items() if chunk_score(v) > 0]
-    ranked.sort(key=lambda kv: chunk_score(kv[1]), reverse=True)
+    ranked.sort(key=lambda kv: (-chunk_score(kv[1]), kv[0][0], kv[0][1]))
     result.top_chunks = [(cx, cz, chunk_score(counts), counts)
                          for (cx, cz), counts in ranked]
     return result
