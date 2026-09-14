@@ -435,11 +435,14 @@ def test_dimension_scoping_and_full_map():
 
 
 def test_item_stack_counting():
-    """掉落物要按**具体物品个数**算/写（2026-09-14 用户反馈）。
+    """掉落物按**具体物品个数**算，且与其它因子一视同仁（2026-09-14 用户反馈）。
 
     实测依据（用户的模组测试地图）：存档里 39 个 item 实体实际装着 **2496 个物品**
     （每堆 64 个），只数"有几个实体"会把 384 个物品的区块记成 6 —— 用户说的"大量掉落物"
-    就是这个意思，所以计数与地图标注都按 Count 之和。
+    就是这个意思，所以计数按 Count 之和。
+    2026-09-15 用户第二轮反馈：**不要再单独标注**（色块上的黄字个数、右侧「掉落物 TOP」榜）
+    —— 掉落物只作为普通因子（entities_item）出现在悬停 tooltip / 底部明细里，
+    因此地图数据里不再有 items/top_items/item_total 这些明细字段。
     """
     import types
 
@@ -474,7 +477,7 @@ def test_item_stack_counting():
     check("非掉落物实体不计堆叠数",
           factors.entity_count_value({"id": "minecraft:zombie"}) == 1, "")
 
-    # 地图数据（含 scoped 裁剪时必须同步裁剪掉落物，不能把范围外的算进来）
+    # 地图数据：掉落物只走因子（entities_item），不再有单独明细/榜单字段
     zero = {k: 0 for k in factors.FACTOR_WEIGHTS}
     hot = dict(zero)
     hot["entities_item"] = 384
@@ -482,27 +485,33 @@ def test_item_stack_counting():
     stats = {(1, -4): {"stacks": 6, "items": 384}}
     res = types.SimpleNamespace(chunk_entries={(1, -4): hot, (0, 0): zero}, item_stats=stats)
     d = mapdata.build_map_data(res, top_n=5)
-    check("地图带掉落物明细",
-          d.get("items") == [{"x": 1, "z": -4, "stacks": 6, "items": 384}], str(d.get("items")))
-    check("掉落物合计按个数", d.get("item_total") == 384 and d.get("item_stacks") == 6,
-          "%s/%s" % (d.get("item_total"), d.get("item_stacks")))
-    check("掉落物 TOP 按个数", bool(d["top_items"]) and d["top_items"][0]["items"] == 384,
-          str(d["top_items"]))
+    check("地图数据不再有掉落物明细字段",
+          not any(k in d for k in ("items", "top_items", "item_total", "item_stacks",
+                                   "item_chunks")),
+          str(sorted(d)))
+    check("掉落物个数以因子形式进图",
+          [c2 for c2 in d["chunks"] if c2["x"] == 1][0]["f"].get("entities_item") == 384,
+          str([c2 for c2 in d["chunks"] if c2["x"] == 1]))
     check("评分把掉落物个数算进去",
           [c2 for c2 in d["chunks"] if c2["x"] == 1][0]["s"] == 387,
           str([c2 for c2 in d["chunks"] if c2["x"] == 1]))
 
     scoped = mapdata.build_union_map(res, (8.0, 64.0, 8.0, "minecraft:overworld"), 0, [],
                                      top_n=5, union_only=True)
-    check("scoped 裁剪时掉落物也随之裁剪", "items" not in scoped, str(scoped.get("items")))
+    check("scoped 裁剪后同样没有掉落物明细",
+          not any(k in scoped for k in ("items", "top_items", "item_total")),
+          str(sorted(scoped)))
 
-    # 端到端：真存档口径 → 地图 HTML 里有明细与标注代码
+    # 端到端：真存档口径 → 地图 HTML 里掉落物与其它因子同口径展示
     res2 = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
     out = os.path.join(ROOT, "tests", "map_items_test.html")
     main_mod.render_map_for(FAKE_WORLD, res2, out, simdist=2, top_n=5)
     txt = open(out, encoding="utf-8").read()
-    check("HTML 含掉落物 TOP 面板", "掉落物 TOP" in txt, "")
-    check("HTML 含按个数标注逻辑", "ITEMS.size" in txt and "黄字=该区块掉落物个数" in txt, "")
+    check("HTML 没有掉落物单独榜单", "掉落物 TOP" not in txt and "itemlist" not in txt, "")
+    check("HTML 不在色块上标掉落物个数", "ITEMS" not in txt and "黄字" not in txt, "")
+    check("HTML 掉落物随因子列表展示（不再单独成行）",
+          "keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`)" in txt and "'entities_item'" not in txt,
+          "")
 
 
 if __name__ == "__main__":

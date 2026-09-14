@@ -48,32 +48,7 @@ def build_map_data(result, top_n=20):
 
     data = {"bounds": bounds, "q50": q50, "q90": q90,
             "chunks": chunks, "top": top, "total": len(chunks)}
-    _attach_items(data, entries, getattr(result, "item_stats", None))
     return data
-
-
-def _attach_items(data, entries, item_stats):
-    """
-    把掉落物明细挂到地图数据上（**按具体个数**，不是"有几堆"）。
-
-    - items：只含真有掉落物的区块 [{x,z,stacks,items}]（少而精，前端直接标数字）
-    - top_items：按物品个数排序的前 10（右侧面板「掉落物 TOP」）
-    - item_total / item_stacks / item_chunks：本图范围内合计
-    只统计**本图范围内**的区块（scoped 裁剪时不会把外面的掉落物算进来）。
-    """
-    if not item_stats:
-        return
-    inside = {k: v for k, v in item_stats.items() if k in entries}
-    if not inside:
-        return
-    data["items"] = [{"x": x, "z": z, "stacks": v.get("stacks", 0), "items": v.get("items", 0)}
-                     for (x, z), v in sorted(inside.items())]
-    data["item_total"] = sum(v.get("items", 0) for v in inside.values())
-    data["item_stacks"] = sum(v.get("stacks", 0) for v in inside.values())
-    data["item_chunks"] = len(inside)
-    ranked = sorted(inside.items(), key=lambda kv: (-kv[1].get("items", 0), kv[0][0], kv[0][1]))
-    data["top_items"] = [{"x": x, "z": z, "stacks": v.get("stacks", 0), "items": v.get("items", 0)}
-                         for (x, z), v in ranked[:10]]
 
 
 # 因子 key → 中文名（供前端 tooltip / 图例）
@@ -102,8 +77,7 @@ def build_player_map(result, player_xyz, sim_dist, top_n=20):
 
     entries = {k: v for k, v in result.chunk_entries.items()
                if abs(k[0] - pcx) <= s and abs(k[1] - pcz) <= s}
-    mock = types.SimpleNamespace(chunk_entries=entries,
-                                 item_stats=getattr(result, "item_stats", None))
+    mock = types.SimpleNamespace(chunk_entries=entries)
     data = build_map_data(mock, top_n=top_n)
     data["player"] = {
         "blockX": px, "blockZ": pz, "chunkX": pcx, "chunkZ": pcz,
@@ -148,8 +122,7 @@ def build_union_map(result, player_xyz, sim_dist, regions, top_n=20, union_only=
                 union |= set(cs)
             entries = {k: v for k, v in entries.items() if k in union}
 
-    mock = types.SimpleNamespace(chunk_entries=entries,
-                                 item_stats=getattr(result, "item_stats", None))
+    mock = types.SimpleNamespace(chunk_entries=entries)
     data = build_map_data(mock, top_n=top_n)
     if data_player:
         data["player"] = data_player
