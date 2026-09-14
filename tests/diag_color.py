@@ -2,8 +2,8 @@
 """
 诊断：看某张地图 HTML 的色块分档与加载系数分布。
 
-用途（2026-09-15 起）：色块阈值按本图非零区块的 p50/p90/p99 自适应 —— 换权重尺度后
-若发现"全图顶格红"，先用它确认阈值与实际分档是否匹配。
+用途（2026-09-15 起）：色块阈值按本图非零区块的 p50/p75/p90 自适应 —— 换权重尺度后
+若发现"全图顶格红"（阈值没跟上）或"看不到红块"（红档用了 p99），先用它确认阈值与分布是否匹配。
 
     python tests/diag_color.py output/01_世界/主世界/map.html
 """
@@ -43,7 +43,7 @@ def main(argv):
         return "红>%d" % b2
 
     print("地图: %s" % path)
-    print("区块 %s · 会被 tick %s · 阈值 p50/p90/p99 = %s"
+    print("区块 %s · 会被 tick %s · 阈值 p50/p75/p90 = %s"
           % (data.get("total"), data.get("loaded"), bands))
     dist = collections.Counter(band(c["s"]) for c in data["chunks"])
     print("色块分布: %s" % dict(dist))

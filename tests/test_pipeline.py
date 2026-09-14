@@ -521,8 +521,8 @@ def test_item_stack_counting():
         (4, 0): dict(zero, be_hopper=2),           # 1200
     })
     dm2 = mapdata.build_map_data(multi, top_n=20)
-    check("色块阈值 = 非零区块 p50/p90/p99（1 只怪及以下算最低档）",
-          dm2["bands"] == [300, 1200, 1200], str(dm2["bands"]))
+    check("色块阈值 = 非零区块 p50/p75/p90（最热 10% 必红，不会红档为空）",
+          dm2["bands"] == [300, 600, 1200], str(dm2["bands"]))
 
     # 端到端：build_union_map 按「常加载×2 / 玩家区×1 / 其余×0」给系数
     res3 = types.SimpleNamespace(chunk_entries={(0, 0): dict(hot), (1, 1): dict(hot),

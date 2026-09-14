@@ -111,13 +111,15 @@ const chunks = new Map();
 for(const c of DATA.chunks) chunks.set(c.x*100000+c.z, c);
 
 function lerp(a,b,t){return Math.round(a+(b-a)*t);}
-// 色块分档阈值：**随本图分布自适应**（DATA.bands = 非零区块的 p50/p90/p99）。
-// ⚠️ 固定阈值（旧版 5/20/60）会随权重尺度失效 —— 权重放大 100 倍后一套全红（2026-09-15 修）。
+// 色块分档阈值：**随本图分布自适应**（DATA.bands = 非零区块的 p50/p75/p90）。
+// ⚠️ 两个坑都踩过：①固定阈值（旧版 5/20/60）会随权重尺度失效 → 全图顶格红；
+//    ②红档用 p99 → 分布平坦时 max==p99，红档为空（用户实测"MSPT 170~190 却看不到红块"）。
+//    现在：最热的 10% 非零区块一定是红的（2026-09-15）。
 const BANDS = (DATA.bands && DATA.bands[2] > 0) ? DATA.bands.slice() : [300, 600, 1200];
 for(let i=1;i<BANDS.length;i++) if(BANDS[i] <= BANDS[i-1]) BANDS[i] = BANDS[i-1] + 1;
 
 function colorFor(score){
-  // 离散 5 档：灰=0(空) · 绿<=p50 · 黄<=p90 · 橘<=p99 · 红>p99
+  // 离散 5 档：灰=0(空) · 绿<=p50 · 黄<=p75 · 橘<=p90 · 红>p90
   if(score<=0) return [50,50,58];
   if(score<=BANDS[0]) return [70,200,90];
   if(score<=BANDS[1]) return [230,220,60];

@@ -55,17 +55,19 @@ def build_map_data(result, top_n=20, load_coefs=None):
     q50 = scores[len(scores) // 2] if scores else 0
     q90 = scores[int(len(scores) * 0.9)] if scores else 999
 
-    # 色块分档阈值 —— **按本图非零区块的实际分布自适应**（p50/p90/p99）。
+    # 色块分档阈值 —— **按本图非零区块的实际分布自适应**（p50/p75/p90）。
     # 2026-09-15 用户反馈「色块标注太过了」：旧阈值 5/20/60 是「1 个掉落物 = 1 分」时代定的，
     # 而权重表后来放大了 100 倍（1 只怪 = 300 分），阈值没跟着改 → 实测 94 个非零区块里
-    # 71% 顶格红（连 1 个箱子 30 分都是橘）。改成分位数后阈值随数据走，图例会显示实际数值。
+    # 71% 顶格红（连 1 个箱子 30 分都是橘）。
+    # ⚠️ 但红档不能用 p99：用户实测「服务器 MSPT 170~190 却看不到红块」—— 分布平坦时
+    # max == p99，红档直接为空。改成 p50/p75/p90 后，**最热的 10% 非零区块一定是红的**。
     nz = [s for s in scores if s > 0]
     if nz:
         p50 = nz[len(nz) // 2]
+        p75 = nz[min(int(len(nz) * 0.75), len(nz) - 1)]
         p90 = nz[min(int(len(nz) * 0.9), len(nz) - 1)]
-        p99 = nz[min(int(len(nz) * 0.99), len(nz) - 1)]
     else:
-        p50 = p90 = p99 = 0
+        p50 = p75 = p90 = 0
 
     # TOP 榜只收**有效分 > 0** 的区块：0 分区块上榜会被前端画成红块，看起来像
     # "无卡顿区域被红色色块覆盖"（2026-09-12 用户反馈）；新的加载系数下，
@@ -80,7 +82,7 @@ def build_map_data(result, top_n=20, load_coefs=None):
 
     data = {"bounds": bounds, "q50": q50, "q90": q90,
             "chunks": chunks, "top": top, "total": len(chunks), "loaded": loaded,
-            "bands": [p50, p90, p99]}
+            "bands": [p50, p75, p90]}
     return data
 
 
