@@ -9,7 +9,7 @@ compound，含 "Entities" 列表（每项是实体 compound，有 id / Pos 等�
 import os
 
 from . import region
-from .factors import _entity_factor
+from .factors import _entity_factor, entity_count_value, item_stack_size, _norm_id
 
 
 class EntityPartition:
@@ -55,8 +55,27 @@ class EntityPartition:
         return [e for e in ents if isinstance(e, dict)]
 
     def merged_counts(self, x, z, counts):
-        """把 (x,z) 区块的实体计数合并进 counts（就地修改并返回）。"""
+        """
+        把 (x,z) 区块的实体计数合并进 counts（就地修改并返回）。
+
+        口径与 factors.analyze_chunk 一致：**掉落物按物品个数**（一叠 64 个计 64）。
+        """
         for entity in self.entities_at(x, z):
             key = _entity_factor(entity)
-            counts[key] = counts.get(key, 0) + 1
+            counts[key] = counts.get(key, 0) + entity_count_value(entity)
         return counts
+
+    def item_counts(self, x, z):
+        """(x,z) 区块的掉落物统计 → (堆数, 物品总个数)（无掉落物返回 (0, 0)）。"""
+        stacks = items = 0
+        for entity in self.entities_at(x, z):
+            eid = entity.get("id")
+            if eid is None:
+                edata = entity.get("entity_data")
+                if isinstance(edata, dict):
+                    eid = edata.get("id")
+            if _norm_id(eid) != "item":
+                continue
+            stacks += 1
+            items += item_stack_size(entity)
+        return stacks, items

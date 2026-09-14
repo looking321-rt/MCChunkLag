@@ -434,6 +434,77 @@ def test_dimension_scoping_and_full_map():
           spawn_dims == {"主世界"}, str(spawn_dims))
 
 
+def test_item_stack_counting():
+    """掉落物要按**具体物品个数**算/写（2026-09-14 用户反馈）。
+
+    实测依据（用户的模组测试地图）：存档里 39 个 item 实体实际装着 **2496 个物品**
+    （每堆 64 个），只数"有几个实体"会把 384 个物品的区块记成 6 —— 用户说的"大量掉落物"
+    就是这个意思，所以计数与地图标注都按 Count 之和。
+    """
+    import types
+
+    import main as main_mod
+    from chunklag import factors, mapdata
+    from chunklag import nbt as _nbt
+    from make_fixture import C, I, S, L, enc_compound
+
+    def items_nbt(counts):
+        ents = L(10, [C({"id": S("minecraft:item"),
+                         "Item": C({"id": S("minecraft:stone"), "Count": I(n)})})
+                      for n in counts])
+        return enc_compound(C({"Level": C({"xPos": I(0), "zPos": I(0), "entities": ents})}))
+
+    # analyze_chunk / item_counts 收的是**解析后的 NBT dict**（不是原始字节）——
+    # 直接喂 bytes 会静默数出 0（踩过一次：bytes 没有 .get，Level 分支全落空）
+    parsed = _nbt.parse_nbt(items_nbt([64, 64, 1]))
+    c = factors.analyze_chunk(parsed)
+    check("掉落物按物品个数计入因子", c["entities_item"] == 129, str(c["entities_item"]))
+    check("item_counts 返回 (堆数, 个数)",
+          factors.item_counts(parsed) == (3, 129),
+          str(factors.item_counts(parsed)))
+
+    # 1.20.5+ 字段小写化：item: {id, count}
+    small = _nbt.parse_nbt(enc_compound(C({"Level": C({"entities": L(10, [
+        C({"id": S("minecraft:item"),
+           "item": C({"id": S("minecraft:stone"), "count": I(16)})})])})})))
+    check("新版小写 count 也认", factors.item_counts(small) == (1, 16),
+          str(factors.item_counts(small)))
+    check("读不到 Count → 按 1 个算",
+          factors.item_stack_size({"Item": {"id": "minecraft:stone"}}) == 1, "")
+    check("非掉落物实体不计堆叠数",
+          factors.entity_count_value({"id": "minecraft:zombie"}) == 1, "")
+
+    # 地图数据（含 scoped 裁剪时必须同步裁剪掉落物，不能把范围外的算进来）
+    zero = {k: 0 for k in factors.FACTOR_WEIGHTS}
+    hot = dict(zero)
+    hot["entities_item"] = 384
+    hot["entities_hostile"] = 1                       # 384 + 3 = 387 分
+    stats = {(1, -4): {"stacks": 6, "items": 384}}
+    res = types.SimpleNamespace(chunk_entries={(1, -4): hot, (0, 0): zero}, item_stats=stats)
+    d = mapdata.build_map_data(res, top_n=5)
+    check("地图带掉落物明细",
+          d.get("items") == [{"x": 1, "z": -4, "stacks": 6, "items": 384}], str(d.get("items")))
+    check("掉落物合计按个数", d.get("item_total") == 384 and d.get("item_stacks") == 6,
+          "%s/%s" % (d.get("item_total"), d.get("item_stacks")))
+    check("掉落物 TOP 按个数", bool(d["top_items"]) and d["top_items"][0]["items"] == 384,
+          str(d["top_items"]))
+    check("评分把掉落物个数算进去",
+          [c2 for c2 in d["chunks"] if c2["x"] == 1][0]["s"] == 387,
+          str([c2 for c2 in d["chunks"] if c2["x"] == 1]))
+
+    scoped = mapdata.build_union_map(res, (8.0, 64.0, 8.0, "minecraft:overworld"), 0, [],
+                                     top_n=5, union_only=True)
+    check("scoped 裁剪时掉落物也随之裁剪", "items" not in scoped, str(scoped.get("items")))
+
+    # 端到端：真存档口径 → 地图 HTML 里有明细与标注代码
+    res2 = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+    out = os.path.join(ROOT, "tests", "map_items_test.html")
+    main_mod.render_map_for(FAKE_WORLD, res2, out, simdist=2, top_n=5)
+    txt = open(out, encoding="utf-8").read()
+    check("HTML 含掉落物 TOP 面板", "掉落物 TOP" in txt, "")
+    check("HTML 含按个数标注逻辑", "ITEMS.size" in txt and "黄字=该区块掉落物个数" in txt, "")
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -449,5 +520,6 @@ if __name__ == "__main__":
     test_new_layout_and_modern_loaders()
     test_mixed_layout_world()
     test_dimension_scoping_and_full_map()
+    test_item_stack_counting()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)

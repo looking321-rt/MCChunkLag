@@ -15,7 +15,7 @@ FACTOR_GROUPS = [
         ("entities_villager", "村民", 2),
         ("entities_vehicle", "载具/矿车", 2),
         ("entities_animal", "动物", 1),
-        ("entities_item", "物品/经验球", 1),
+        ("entities_item", "掉落物/经验球", 1),
         ("entities_other", "其它实体", 1),
     ]),
     ("方块实体(block_entities)", [
@@ -101,15 +101,46 @@ def _extract_block_entities(level):
     return []
 
 
-def _entity_factor(entity):
-    """单个实体 → factor key（无则 None）。"""
+def _entity_id(entity):
+    """实体 id（归一化，去 minecraft: 前缀）。1.19+ 部分实体把 id 放在 entity_data 下。"""
     eid = entity.get("id")
     if eid is None:
-        # 1.19+ 部分实体 id 在 entity_data 下
         edata = entity.get("entity_data")
         if isinstance(edata, dict):
             eid = edata.get("id")
-    eid = _norm_id(eid)
+    return _norm_id(eid)
+
+
+def item_stack_size(entity):
+    """
+    掉落物实体里的**物品个数**（堆叠数）—— MC 里一叠掉落物是**一个实体**带 Count。
+
+    存档实测（1.20.1 模组测试地图）：39 个 item 实体实际装着 **2496 个物品**（每堆 64），
+    所以"有几个掉落物"必须看 Count 之和，只看实体个数会把 384 个物品的一堆算成 1。
+    字段：1.20.1 是 `Item: {id, Count, tag}`；1.20.5+ 小写化 `item: {id, count}`。
+    读不到 Count（含经验球这类没有 Item 的实体）按 1 个算。
+    """
+    for key in ("Item", "item"):
+        it = entity.get(key)
+        if isinstance(it, dict):
+            for ck in ("Count", "count"):
+                v = it.get(ck)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                    return int(v)
+            return 1
+    return 1
+
+
+def entity_count_value(entity):
+    """该实体在因子计数里占多少：**掉落物按物品个数**（一叠 64 个 = 64），其余 1 个实体 = 1。"""
+    if _entity_factor(entity) == "entities_item":
+        return item_stack_size(entity)
+    return 1
+
+
+def _entity_factor(entity):
+    """单个实体 → factor key（无则 None）。"""
+    eid = _entity_id(entity)
     if not eid:
         return "entities_other"
     if "minecart" in eid:
@@ -118,7 +149,7 @@ def _entity_factor(entity):
         return "entities_hostile"
     if eid == "villager":
         return "entities_villager"
-    if eid in ("item", "experience_orb") or eid == "item":
+    if eid in ("item", "experience_orb"):
         return "entities_item"
     return "entities_other"
 
@@ -247,10 +278,31 @@ def has_redstone_kit(nbt_dict):
     return False
 
 
+def item_counts(nbt_dict):
+    """
+    区块里的掉落物统计：返回 (堆数, 物品总个数)。
+
+    只数 id 为 `item` 的实体（经验球不算掉落物）。供地图上「按具体数目」标注用 ——
+    因子计数里 entities_item 已经按个数算，这里额外给出堆数，两者都展示。
+    """
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    stacks = items = 0
+    for entity in _extract_entities(level):
+        if _entity_id(entity) != "item":
+            continue
+        stacks += 1
+        items += item_stack_size(entity)
+    return stacks, items
+
+
 def analyze_chunk(nbt_dict):
     """
     分析一个区块，返回 {factor_key: count}。
     兼容：有 Level 包裹（1.18 前） vs 平铺（1.20.5+）。
+
+    计数口径：**掉落物按物品个数**（一叠 64 个计 64，见 item_stack_size），其余实体/方块实体按个数。
     """
     level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
     if not isinstance(level, dict):
@@ -260,7 +312,7 @@ def analyze_chunk(nbt_dict):
 
     for entity in _extract_entities(level):
         key = _entity_factor(entity)
-        counts[key] = counts.get(key, 0) + 1
+        counts[key] = counts.get(key, 0) + entity_count_value(entity)
 
     for be in _extract_block_entities(level):
         key = _be_factor(be)

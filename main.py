@@ -106,6 +106,7 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0, hook=None):
     for rdir, dim_name, key, dim_dir, dim_id in find_region_dirs(world_dir, dim_sel):
         entity_part = EntityPartition(dim_dir)         # 1.16+ 实体分区（无则忽略）
         portal_chunks, redstone_chunks, rail_chunks = set(), set(), set()
+        item_stats = {}                                # (cx,cz) → {"stacks","items"}
         def gen():
             n = 0
             for cx, cz, nbt_data in region.scan_region_dir(rdir, hook=hook):
@@ -118,13 +119,22 @@ def analyze_world(world_dir, dim_sel="0", limit_chunks=0, hook=None):
                     if factors.has_active_powered_rail(nbt_data):
                         rail_chunks.add((cx, cz))
                 counts = factors.analyze_chunk(nbt_data)
+                # 掉落物按**具体个数**统计（一堆 64 个 = 64 个）：旧版实体嵌在区块 NBT，
+                # 1.16+ 在 entities 分区，两处都要收；地图上按这个数目标注。
+                stacks, items = factors.item_counts(nbt_data)
                 if entity_part.exists():
                     entity_part.merged_counts(cx, cz, counts)
+                    es, en = entity_part.item_counts(cx, cz)
+                    stacks += es
+                    items += en
+                if items:
+                    item_stats[(cx, cz)] = {"stacks": stacks, "items": items}
                 yield cx, cz, counts
                 n += 1
                 if limit_chunks and n >= limit_chunks:
                     break
         res = analyze.analyze(gen(), world_name=world_name, data_version=data_version)
+        res.item_stats = item_stats
         minecart_chunks = loaders.read_minecart_chunks(os.path.join(dim_dir, "entities"))
         portal_armed = loaders.loader_evidence(
             portal_chunks, redstone_chunks, rail_chunks, minecart_chunks)

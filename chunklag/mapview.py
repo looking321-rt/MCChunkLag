@@ -47,6 +47,8 @@ _TEMPLATE = """<!DOCTYPE html>
   #arrow .row{padding:4px 0;cursor:pointer;border-top:1px solid #26262f;}
   #arrow .row:hover{color:#a6e3a1;}
   #arrow .rank{color:#89b4fa;font-weight:bold;margin-right:6px;}
+  #arrow .row .n{color:#ffe08a;font-weight:bold;}
+  #itemsum{font-size:11px;color:#a6e3a1;margin-top:6px;line-height:1.6;}
   #tooltip{position:fixed;pointer-events:none;background:rgba(15,15,22,.95);padding:8px 10px;
     border-radius:8px;font-size:12px;display:none;max-width:300px;line-height:1.5;}
   #tooltip b{color:#a6e3a1;}
@@ -68,7 +70,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <div style="margin-top:8px;font-size:11px;color:#a6e3a1;">拖拽平移 · 滚轮缩放 · 悬停看因子 · 点击选中</div>
   <button class="btn" id="reset">适配视图</button>
   <div id="regionlegend" style="margin-top:6px;font-size:11px;line-height:1.7;"></div>
-  <div id="hint">着色按卡顿分(启发式)；红块=最卡 TOP；非真实 mspt。</div>
+  <div id="hint">着色按卡顿分(启发式)；红块=最卡 TOP；地图上<b style="color:#ffe08a">黄字=该区块掉落物个数</b>（一堆 64 个就写 64）。非真实 mspt。</div>
 </div>
 
 <div id="coordbar" class="card">
@@ -86,7 +88,12 @@ _TEMPLATE = """<!DOCTYPE html>
   <button id="zin">+</button><button id="zout">−</button><button id="zfit">⊡</button>
 </div>
 
-<div id="arrow" class="card"><h2>🔴 最卡 TOP 区块</h2><div id="toplist"></div></div>
+<div id="arrow" class="card">
+  <h2>🔴 最卡 TOP 区块</h2><div id="toplist"></div>
+  <h2 style="margin-top:12px;color:#ffe08a;">🟡 掉落物 TOP（按个数）</h2>
+  <div id="itemlist"></div>
+  <div id="itemsum"></div>
+</div>
 <div id="tooltip"></div>
 
 <script id="mapdata" type="application/json">__DATA__</script>
@@ -105,6 +112,9 @@ let hover=null, selected=null;
 const mapW = B.maxX-B.minX+1, mapZ = B.maxZ-B.minZ+1;
 const chunks = new Map();
 for(const c of DATA.chunks) chunks.set(c.x*100000+c.z, c);
+// 掉落物明细（按具体个数）：区块键 → {stacks, items}
+const ITEMS = new Map();
+for(const it of (DATA.items||[])) ITEMS.set(it.x*100000+it.z, it);
 
 function lerp(a,b,t){return Math.round(a+(b-a)*t);}
 function colorFor(score){
@@ -241,9 +251,23 @@ function render(){
       ctx.fillStyle='rgba(255,60,60,.5)';
       ctx.fillRect(sx(t.x)-moff, sy(t.z)-moff, msz, msz);
     }
+    // 掉落物：**按具体个数**在区块上标数字（一堆 64 个就写 64）
+    // 缩放太小（<5px/区块）时数字会糊成一团，故缩略时不画；放大到看得清才显示。
+    if(ITEMS.size && scale>=5){
+      ctx.font='bold '+Math.max(10,Math.min(scale*0.45,15))+'px Segoe UI,Microsoft YaHei';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,.9)';
+      for(const it of DATA.items){
+        const x=sx(it.x)+scale/2, y=sy(it.z)+scale/2;
+        if(x<-30||x>W+30||y<-30||y>H+30) continue;
+        const txt=String(it.items);
+        ctx.strokeText(txt,x,y);
+        ctx.fillStyle='#ffe08a'; ctx.fillText(txt,x,y);
+      }
+      ctx.textAlign='start'; ctx.textBaseline='alphabetic';
+    }
     // 玩家位置标记
-    if(DATA.player){
-      const ppx=sx(DATA.player.blockX/16), ppy=sy(DATA.player.blockZ/16);
+    if(DATA.player){      const ppx=sx(DATA.player.blockX/16), ppy=sy(DATA.player.blockZ/16);
       ctx.fillStyle='rgba(80,160,255,.35)'; ctx.strokeStyle='rgba(255,255,255,.95)';
       ctx.lineWidth=2; ctx.beginPath(); ctx.arc(ppx,ppy,10,0,Math.PI*2); ctx.fill(); ctx.stroke();
       ctx.beginPath();
@@ -296,8 +320,11 @@ canvas.addEventListener('mousemove',e=>{
   const tip=document.getElementById('tooltip');
   if(c){
     let html=`<b>方块 (${bcx(cx)}, ${bcz(cz)})</b><br>区块 (${cx}, ${cz}) · 评分 <b style="color:#f38ba8">${c.s}</b>`;
-    const keys=Object.keys(c.f);
-    html += keys.length? '<br>'+keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`).join(' · ') : '<br>无卡顿因子';
+    const it=ITEMS.get(cx*100000+cz);
+    if(it) html += `<br>掉落物: <b style="color:#ffe08a">${it.items}</b> 个（${it.stacks} 堆）`;
+    // 有掉落物明细时因子列表不再重复显示"掉落物/经验球"（上面已按个数单独列出）
+    const keys=Object.keys(c.f).filter(k=>!(it && k==='entities_item'));
+    html += keys.length? '<br>'+keys.map(k=>`${LABELS[k]||k}: ${c.f[k]}`).join(' · ') : (it?'':'<br>无卡顿因子');
     tip.innerHTML=html; tip.style.display='block';
     tip.style.left=Math.min(e.clientX+14, W-320)+'px';
     tip.style.top=Math.max(10,e.clientY+14)+'px';
@@ -308,8 +335,11 @@ function updateDetail(cx,cz){
   const c=chunks.get(cx*100000+cz);
   const sd=document.getElementById('sdetail');
   if(c){
-    const keys=Object.keys(c.f);
-    sd.textContent = '选中 方块('+bcx(cx)+','+bcz(cz)+') · 区块('+cx+','+cz+') · 评分 '+c.s + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):' | 无因子');
+    const it=ITEMS.get(cx*100000+cz);
+    const keys=Object.keys(c.f).filter(k=>!(it && k==='entities_item'));
+    sd.textContent = '选中 方块('+bcx(cx)+','+bcz(cz)+') · 区块('+cx+','+cz+') · 评分 '+c.s
+      + (it? ' | 掉落物 '+it.items+' 个（'+it.stacks+' 堆）': '')
+      + (keys.length? ' | '+keys.map(k=>LABELS[k]+':'+c.f[k]).join(' '):'');
   } else sd.textContent='';
 }
 
@@ -346,6 +376,23 @@ DATA.top.forEach((t,i)=>{
   r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale; selected=t; render(); updateDetail(t.x,t.z); };
   tl.appendChild(r);
 });
+
+// 掉落物 TOP（按**具体个数**排序）+ 合计
+const il=document.getElementById('itemlist');
+const isum=document.getElementById('itemsum');
+if(DATA.top_items && DATA.top_items.length){
+  DATA.top_items.forEach((t,i)=>{
+    const r=document.createElement('div'); r.className='row';
+    r.innerHTML=`<span class="rank">${i+1}.</span>方块(${bcx(t.x)}, ${bcz(t.z)}) · 区块(${t.x}, ${t.z}) `
+      + `<span class="n">${t.items}</span> 个（${t.stacks} 堆）`;
+    r.onclick=()=>{ offX=W/2-(t.x-B.minX)*scale; offY=H/2-(t.z-B.minZ)*scale;
+      selected={x:t.x,z:t.z}; render(); updateDetail(t.x,t.z); };
+    il.appendChild(r);
+  });
+  isum.textContent = `本图合计 ${DATA.item_total} 个掉落物 · ${DATA.item_stacks} 堆 · 分布在 ${DATA.item_chunks} 个区块`;
+} else {
+  il.innerHTML='<div style="font-size:11px;color:#7f849c">本图范围内没有掉落物</div>';
+}
 
 window.addEventListener('resize',()=>{resize();fit();});
 resize(); fit(); renderBar();
