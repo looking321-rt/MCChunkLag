@@ -591,19 +591,22 @@ def test_redstone_block_counting():
         seq = [first_idx] * first_n + [second_idx] * second_n
         return seq + [0] * (4096 - len(seq))
 
-    # 1) 基本计数（bits=4，padded 与 compact 等价）
-    c = factors.count_redstone_blocks(chunk_with(
+    # 1) 基本计数（bits=4，padded 与 compact 等价）——
+    #    这些合成数据没写 Properties，红石粉/中继器都算"未通电"→ 落在**待机档**
+    c = factors.count_tick_blocks(chunk_with(
         ["stone", "redstone_wire", "repeater"], pack_padded(indices(1, 17, 2, 3))))
-    check("红石粉 17 + 中继器 3 = 20", c == 20, str(c))
+    check("红石粉 17 + 中继器 3 = 20（未通电 → 待机档）",
+          c.get("blocks_redstone_idle") == 20 and c.get("blocks_redstone", 0) == 0, str(c))
 
     # 2) **回归**：bits=5（palette 30 项）—— 手抖写成"紧凑跨 long"会位错位、虚报成百上千倍。
     #    实测存档正是这种段（palette=30 → data 342 longs = ceil(4096/12)，padded）。
     pal30 = ["stone"] * 5 + ["redstone_wire"] + ["stone"] * 24
     d_padded = pack_padded(indices(5, 1000), 5)
     check("bits=5 padded：342 longs（与实测一致）", len(d_padded) == 342, str(len(d_padded)))
-    c2 = factors.count_redstone_blocks(chunk_with(pal30, d_padded))
+    c2 = factors.count_tick_blocks(chunk_with(pal30, d_padded)).get("blocks_redstone_idle")
     check("bits=5 padded 解出 1000 个红石粉（不虚高）", c2 == 1000, str(c2))
-    c2b = factors.count_redstone_blocks(chunk_with(pal30, pack_compact(indices(5, 1000), 5)))
+    c2b = factors.count_tick_blocks(
+        chunk_with(pal30, pack_compact(indices(5, 1000), 5))).get("blocks_redstone_idle")
     check("bits=5 紧凑打包也兼容", c2b == 1000, str(c2b))
 
     # 3) 健全性检查：位宽/打包判错 → 大量越界索引 → 宁可返回 0 也不虚高
@@ -611,31 +614,173 @@ def test_redstone_block_counting():
         "palette": [{"Name": "minecraft:stone"}, {"Name": "minecraft:redstone_wire"}],
         "data": pack_padded(indices(1, 4096), 5),      # palette 只有 2 项却按 bits=5 写
     }}]}
-    check("位宽判错时返回 0（不虚高）", factors.count_redstone_blocks(bogus) == 0,
-          str(factors.count_redstone_blocks(bogus)))
+    check("位宽判错时返回 0（不虚高）",
+          factors.count_tick_blocks(bogus).get("blocks_redstone_idle", 0) == 0,
+          str(factors.count_tick_blocks(bogus)))
 
     # 4) 按钮/压力板按后缀匹配；活塞等方块实体不在这里重复计
-    c3 = factors.count_redstone_blocks(chunk_with(
-        ["stone", "oak_button", "stone_pressure_plate"], pack_padded(indices(1, 5, 2, 2))))
+    c3 = factors.count_tick_blocks(chunk_with(
+        ["stone", "oak_button", "stone_pressure_plate"],
+        pack_padded(indices(1, 5, 2, 2)))).get("blocks_redstone_idle")
     check("按钮/压力板按后缀识别 = 7", c3 == 7, str(c3))
-    c4 = factors.count_redstone_blocks(chunk_with(
-        ["stone", "piston", "comparator"], pack_padded(indices(1, 100, 2, 4))))
-    check("活塞不计入（避免与 be_redstone 重复），比较器计 4", c4 == 4, str(c4))
+    c4 = factors.count_tick_blocks(chunk_with(
+        ["stone", "piston", "comparator"],
+        pack_padded(indices(1, 100, 2, 4)))).get("blocks_redstone_idle")
+    check("活塞不计入（避免与 be_piston 重复），比较器计 4", c4 == 4, str(c4))
 
     # 5) 无 data 的段（palette 长度 1）不猜 4096 个
     no_data = {"sections": [{"block_states": {
         "palette": [{"Name": "minecraft:redstone_wire"}]}}]}
-    check("无 data 的段不误算成 4096 个", factors.count_redstone_blocks(no_data) == 0, "")
+    check("无 data 的段不误算成 4096 个",
+          factors.count_tick_blocks(no_data).get("blocks_redstone_idle", 0) == 0, "")
 
     # 6) analyze_chunk 集成 + 权重档位
     counts = factors.analyze_chunk(chunk_with(
         ["stone", "redstone_wire"], pack_padded(indices(1, 64))))
-    check("analyze_chunk 计入 blocks_redstone=64", counts["blocks_redstone"] == 64,
-          str(counts["blocks_redstone"]))
+    check("analyze_chunk 计入 blocks_redstone_idle=64", counts["blocks_redstone_idle"] == 64,
+          str(counts["blocks_redstone_idle"]))
     w = factors.FACTOR_WEIGHTS
-    check("权重档位：静态容器 < 红石元件 < 漏斗",
+    check("权重档位：静态容器 < 活跃红石元件 < 漏斗",
           w["be_container"] < w["blocks_redstone"] < w["be_hopper"],
           "%s / %s / %s" % (w["be_container"], w["blocks_redstone"], w["be_hopper"]))
+
+
+def test_factor_taxonomy():
+    """因子细分口径（2026-09-15 用户拍板）。
+
+    实体按「每 tick 干多少活」分 18 档（BOSS/矿车三档/船/下落方块/激活 TNT/动物/宠物/
+    飞行/水生/弹射物/盔甲架…），方块实体按「每 tick 必做 / 持续生成 / 触发才动 / 静态」分档，
+    方块侧补上流体刻、火、生长类，并读方块状态区分**红石活跃 vs 待机**。
+
+    三条本次修掉的失效点用断言钉死（都是实测真实存档发现的）：
+      1) `_ANIMAL` 集合定义了却**从未被 _entity_factor 引用** → 生存001 里 4763 个动物
+         （鸡 867/羊 833/猪 687…）全掉进 entities_other 兜底档；
+      2) `sculk_sensor` 既是方块实体又被当红石元件方块 → 双重计分（实测 10260 个）；
+      3) `dropper`/`dispenser` 被归到熔炉档（`be_furnace`）。
+    """
+    from chunklag import factors
+
+    def ent(eid):
+        return factors._entity_factor({"id": "minecraft:" + eid})
+
+    # --- 实体细分 ---
+    check("敌对怪 → entities_hostile", ent("zombie") == "entities_hostile", ent("zombie"))
+    check("守夜人 → BOSS 档", ent("warden") == "entities_boss", ent("warden"))
+    check("远古怪 → BOSS 档", ent("elder_guardian") == "entities_boss")
+    check("牛 → 陆生动物（_ANIMAL 曾未接线）", ent("cow") == "entities_animal", ent("cow"))
+    check("鸡 → 陆生动物", ent("chicken") == "entities_animal")
+    check("鳕鱼 → 水生", ent("cod") == "entities_aquatic", ent("cod"))
+    check("蝙蝠 → 飞行", ent("bat") == "entities_flying")
+    check("蜜蜂 → 飞行（不是陆生动物）", ent("bee") == "entities_flying", ent("bee"))
+    check("狼 → 宠物", ent("wolf") == "entities_pet")
+    check("羊驼 → 宠物（不是陆生动物）", ent("llama") == "entities_pet", ent("llama"))
+    check("铁傀儡 → 傀儡档", ent("iron_golem") == "entities_golem")
+    check("村民 → 村民档", ent("villager") == "entities_villager")
+    check("流浪商人 → 村民档", ent("wandering_trader") == "entities_villager")
+    check("普通矿车", ent("minecart") == "entities_minecart")
+    check("箱矿车 → 运输矿车档", ent("chest_minecart") == "entities_minecart_cargo")
+    check("漏斗矿车 → 运输矿车档", ent("hopper_minecart") == "entities_minecart_cargo")
+    check("刷怪笼矿车 → 特殊矿车档", ent("spawner_minecart") == "entities_minecart_special")
+    check("船（1.19+ 木种前缀）", ent("oak_boat") == "entities_boat", ent("oak_boat"))
+    check("旧版 boat id 也归船", ent("boat") == "entities_boat")
+    check("箱船", ent("oak_chest_boat") == "entities_boat")
+    check("下落的方块", ent("falling_block") == "entities_falling")
+    check("激活的 TNT（实体）", ent("tnt") == "entities_tnt")
+    check("TNT 矿车不被当作 TNT 实体", ent("tnt_minecart") == "entities_minecart_special")
+    check("盔甲架 → 展示类", ent("armor_stand") == "entities_decor")
+    check("物品展示框 → 展示类", ent("item_frame") == "entities_decor")
+    check("箭 → 弹射物", ent("arrow") == "entities_projectile")
+    check("经验球 → 掉落物档", ent("experience_orb") == "entities_item")
+
+    # --- 方块实体细分 ---
+    def be(bid, **kw):
+        d = {"id": "minecraft:" + bid}
+        d.update(kw)
+        return factors._be_factor(d)
+
+    check("漏斗 → 每 tick 档", be("hopper") == "be_hopper")
+    check("刷怪笼", be("spawner") == "be_spawner")
+    check("试炼刷怪箱", be("trial_spawner") == "be_trial_spawner")
+    check("幽匿感测器 → 幽匿档", be("sculk_sensor") == "be_sculk")
+    check("命令方块 → 命令档", be("command_block") == "be_command")
+    check("粘性活塞 → 活塞档", be("sticky_piston") == "be_piston")
+    check("投掷器 → 红石 IO（曾错归熔炉档）", be("dropper") == "be_redstone_io", be("dropper"))
+    check("发射器 → 红石 IO", be("dispenser") == "be_redstone_io")
+    check("熔炉（没在烧）→ 待机档", be("furnace") == "be_machine", be("furnace"))
+    check("熔炉（BurnTime>0）→ 烧炼档", be("furnace", BurnTime=200) == "be_smelting")
+    check("酿造台（BrewTime>0）→ 烧炼档", be("brewing_stand", BrewTime=100) == "be_smelting")
+    check("营火（CookingTimes 有值）→ 烧炼档",
+          be("campfire", CookingTimes=[100, 0, 0, 0]) == "be_smelting")
+    check("箱子 → 静态容器", be("chest") == "be_container")
+    check("末影箱 → 单列档（无库存）", be("ender_chest") == "be_ender_chest")
+    check("潜影盒（带颜色前缀）", be("red_shulker_box") == "be_shulker", be("red_shulker_box"))
+    check("告示牌 → 静态", be("sign") == "be_static")
+    check("床（带颜色前缀）→ 静态", be("red_bed") == "be_static")
+    check("mod 未知方块实体 → 兜底", be("dummy") == "be_other")
+
+    # --- 方块细分（含活跃状态判定）---
+    def blk(name, **props):
+        return factors._block_factor("minecraft:" + name, props)
+
+    check("未通电红石粉 → 待机档", blk("redstone_wire", power="0") == "blocks_redstone_idle")
+    check("通电红石粉（power=7）→ 活跃档", blk("redstone_wire", power="7") == "blocks_redstone")
+    check("已触发侦测器 → 活跃档", blk("observer", powered="true") == "blocks_redstone")
+    check("未触发侦测器 → 待机档", blk("observer", powered="false") == "blocks_redstone_idle")
+    check("点亮的中继器 → 活跃档", blk("repeater", powered="true") == "blocks_redstone")
+    check("红石块 → 待机档（静态电源，不给高权重）",
+          blk("redstone_block") == "blocks_redstone_idle")
+    check("红石灯 → 待机档", blk("redstone_lamp") == "blocks_redstone_idle")
+    check("音符盒 → 待机档", blk("note_block") == "blocks_redstone_idle")
+    check("按钮/压力板按后缀识别",
+          blk("oak_button") == "blocks_redstone_idle"
+          and blk("stone_pressure_plate") == "blocks_redstone_idle")
+    check("活塞（方块形态）不在方块侧计（避免与 be_piston 双计）", blk("piston") is None)
+    check("幽匿感测器不在方块侧计（避免与 be_sculk 双计）", blk("sculk_sensor") is None)
+    # --- 流体与生长类**必须不计分**（2026-09-15 加进来后实测撤掉，别再退回）---
+    # 理由：①随机刻与方块数量无关（每区块按 randomTickSpeed 固定抽样，138 万个作物与 1000 个
+    # 抽样次数一样）②稳态流体不再产生 scheduled tick，存档无法区分"正在流"与"早已静止"。
+    # 实测代价：生存001 里这两类独吞 **95.6% 总分**，TOP 12 全是 lava/water/growt，
+    # 玩家装置被完全挤出榜单；生电 TOP2/3/5 同样被水域占掉。
+    check("流动水不计分（曾独吞 25.7% 总分）", blk("water", level="3") is None)
+    check("下落水（level=8）也不计分", blk("water", level="8") is None)
+    check("水源不计分", blk("water", level="0") is None)
+    check("流动岩浆不计分（曾独吞 29.6% 总分）", blk("lava", level="2") is None)
+    check("小麦不计分（曾独吞 40.1% 总分）", blk("wheat") is None)
+    check("紫水晶母岩不计分", blk("budding_amethyst") is None)
+    check("树叶/发光地衣不计分（自然装饰海量，会淹掉装置热点）",
+          blk("oak_leaves") is None and blk("glow_lichen") is None)
+    check("火仍然计分（会持续 tick，且只存在于活动中）", blk("fire") == "blocks_fire")
+    check("流体/生长类因子已从权重表移除",
+          "blocks_water" not in factors.FACTOR_WEIGHTS
+          and "blocks_lava" not in factors.FACTOR_WEIGHTS
+          and "blocks_growth" not in factors.FACTOR_WEIGHTS)
+
+    # --- 端到端：一个 section 里多种方块各归各档 ---
+    seq = [1] * 3 + [2] * 2 + [3] * 100 + [4] * 7 + [5] * 4 + [6] * 9   # palette 7 项 → bits=4
+    per = 16
+    longs = [0] * ((len(seq) + per - 1) // per)
+    for i, v in enumerate(seq):
+        li, off = divmod(i, per)
+        longs[li] |= v << (off * 4)
+    longs = [x - (1 << 64) if x >= (1 << 63) else x for x in longs]      # NBT 是**有符号** long
+    chunk = {"sections": [{"block_states": {
+        "palette": [
+            {"Name": "minecraft:stone"},
+            {"Name": "minecraft:redstone_wire", "Properties": {"power": "0"}},
+            {"Name": "minecraft:observer", "Properties": {"powered": "true"}},
+            {"Name": "minecraft:water", "Properties": {"level": "0"}},
+            {"Name": "minecraft:water", "Properties": {"level": "5"}},
+            {"Name": "minecraft:lava", "Properties": {"level": "1"}},
+            {"Name": "minecraft:fire"},
+        ],
+        "data": longs,
+    }}]}
+    tb = factors.count_tick_blocks(chunk)
+    check("端到端：待机红石粉 3 + 活跃侦测器 2",
+          tb.get("blocks_redstone_idle") == 3 and tb.get("blocks_redstone") == 2, str(tb))
+    check("端到端：水源/流动水/流动岩浆/小麦全都不计分",
+          not (set(tb) & {"blocks_water", "blocks_lava", "blocks_growth"}), str(tb))
+    check("端到端：火计 9 个", tb.get("blocks_fire") == 9, str(tb))
 
 
 if __name__ == "__main__":
@@ -655,5 +800,6 @@ if __name__ == "__main__":
     test_dimension_scoping_and_full_map()
     test_item_stack_counting()
     test_redstone_block_counting()
+    test_factor_taxonomy()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)
