@@ -36,6 +36,12 @@ FACTOR_GROUPS = [
         ("be_container", "容器(箱/桶/潜影盒，静态)", 30),
         ("be_other", "其它方块实体", 50),
     ]),
+    ("方块(blocks)", [
+        # 红石元件**方块**（红石粉/中继器/比较器/侦测器/红石火把/按钮/压力板…）——
+        # 它们不是方块实体，当年只数 block_entities 时整类漏掉了，而 Wiki 点名「红石元件
+        # （尤其红石粉）造成海量方块更新」是 MSPT 大户。按**个数**计（解码位压缩数组）。
+        ("blocks_redstone", "红石元件方块(粉/中继器/侦测器)", 150),
+    ]),
 ]
 
 # 权重速查表
@@ -214,6 +220,111 @@ def _chunk_block_names(nbt_dict):
     return {n for n, _p in _chunk_block_entries(nbt_dict)}
 
 
+# ---- 红石元件「方块」计数（需要解码位压缩数组） ----
+# Why：红石粉/中继器/比较器/侦测器/红石火把都是**普通方块**，不在 block_entities 里，
+# 早期只数方块实体时整类漏掉；而 Wiki 点名的 MSPT 大户恰恰是「红石元件（尤其红石粉）
+# 造成海量方块更新/光照更新」。palette 只给**种类**、不给个数，所以必须解码
+# section.block_states.data（4096 个 16³ 方块的位压缩 long 数组）才能按个数计分。
+_REDSTONE_BLOCK_NAMES = {
+    "redstone_wire", "repeater", "comparator", "redstone_torch",
+    "redstone_wall_torch", "observer", "lever", "tripwire_hook", "tripwire",
+    "daylight_detector", "target", "sculk_sensor",
+}
+# 注意：redstone_block（红石块，静态电源）与 redstone_lamp（红石灯，只在被点亮时更新一次）
+# **故意不收** —— 它们不每 tick 干活，收进来会让"装饰性红石灯墙"误算成高负载。
+
+
+def _is_redstone_block_name(name):
+    """方块名是否属于「会引发红石更新」那类（按钮/压力板按后缀匹配）。"""
+    n = _norm_id(name)
+    return n in _REDSTONE_BLOCK_NAMES or n.endswith("_button") or n.endswith("_pressure_plate")
+
+
+def _section_index_counts(bs):
+    """
+    解出 section 里每个 palette 索引出现多少次（block_states.data → 索引频次）。
+
+    ⚠️ 打包方式**实测踩坑记录（2026-09-15，务必别退回）**：MC 的 long 数组是
+    **padded（每个 long 内取整、entry 不跨 long 边界）** —— 每 long 装 `64 // bits` 个 entry，
+    余位浪费；longs 数 = ceil(4096 / (64 // bits))。
+    实测证据：某 section palette=30 → bits=5 → data 长度 **342**，正是
+    ceil(4096 / 12) = 342；若按"紧凑跨 long"解应得 320 —— 我第一版就是按紧凑写的，
+    结果位错位、索引随机命中 observer，把 3.2 万个方块虚报成 32909 个侦测器
+    （全图虚高到 67 万，一眼假）。这里两种都兼容（按 data 长度就近判别），
+    并加**越界索引健全性检查**：解出的索引若大量超出 palette 范围，说明判错 → 返回空（宁可漏，不可虚高）。
+    """
+    pal = bs.get("palette")
+    data = bs.get("data")
+    if not isinstance(pal, list) or not isinstance(data, list) or not data:
+        return {}
+    bits = max(4, (len(pal) - 1).bit_length())
+    mask = (1 << bits) - 1
+    per_long = 64 // bits
+    n_padded = (4096 + per_long - 1) // per_long          # 不跨 long 边界
+    n_compact = (4096 * bits + 63) // 64                   # 紧凑跨 long
+    padded = abs(len(data) - n_padded) <= abs(len(data) - n_compact)
+
+    counts = {}
+    over = 0
+    if padded:
+        for li, v in enumerate(data):
+            if not isinstance(v, int):
+                continue
+            u = v & 0xFFFFFFFFFFFFFFFF
+            base = li * per_long
+            for k in range(per_long):
+                pos = base + k
+                if pos >= 4096:
+                    break
+                idx = (u >> (k * bits)) & mask
+                if idx >= len(pal):
+                    over += 1
+                counts[idx] = counts.get(idx, 0) + 1
+    else:
+        stream = 0
+        for i, v in enumerate(data):
+            if isinstance(v, int):
+                stream |= (v & 0xFFFFFFFFFFFFFFFF) << (64 * i)
+        for i in range(4096):
+            idx = (stream >> (i * bits)) & mask
+            if idx >= len(pal):
+                over += 1
+            counts[idx] = counts.get(idx, 0) + 1
+
+    if over > 4096 * 0.01:                                  # >1% 越界 = 打包/位宽判错
+        return {}
+    return counts
+
+
+def count_redstone_blocks(nbt_dict):
+    """
+    区块里红石元件**方块**的个数（红石粉/中继器/比较器/侦测器/红石火把/按钮/压力板…）。
+
+    只对 palette 里真含红石元件的 section 做解码 —— 绝大多数段是石头/空气，跳过它们
+    才不会把扫描拖慢（实测这份 4000+ 区块的世界加进来仍是秒级）。
+    """
+    level = nbt_dict.get("Level") if isinstance(nbt_dict, dict) else None
+    if not isinstance(level, dict):
+        level = nbt_dict or {}
+    total = 0
+    for sec in level.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        bs = sec.get("block_states")
+        if not isinstance(bs, dict):                     # 旧版：palette/data 直接挂在 section 上
+            bs = {"palette": sec.get("palette"), "data": sec.get("data")}
+        pal = bs.get("palette")
+        if not isinstance(pal, list):
+            continue
+        wanted = {i for i, p in enumerate(pal)
+                  if isinstance(p, dict) and _is_redstone_block_name(p.get("Name"))}
+        if not wanted:
+            continue
+        counts = _section_index_counts(bs)
+        total += sum(counts.get(i, 0) for i in wanted)
+    return total
+
+
 def has_active_powered_rail(nbt_dict):
     """
     区块是否含**已激活**的动力铁轨（powered_rail 且 Properties.powered == "true"）。
@@ -288,6 +399,9 @@ def analyze_chunk(nbt_dict):
     for be in _extract_block_entities(level):
         key = _be_factor(be)
         counts[key] = counts.get(key, 0) + 1
+
+    # 红石元件方块（红石粉/中继器/…）需要解码位压缩数组，按**个数**计入
+    counts["blocks_redstone"] = count_redstone_blocks(nbt_dict)
 
     return counts
 

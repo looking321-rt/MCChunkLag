@@ -550,6 +550,94 @@ def test_item_stack_counting():
           "基础分" in txt and "有效分" in txt and "加载系数" in txt, "")
 
 
+def test_redstone_block_counting():
+    """红石元件的**方块**（红石粉/中继器/侦测器/按钮…）要按个数计入评分（2026-09-15）。
+
+    Why：这些是普通方块、不在 block_entities 里，早期「只数方块实体」时整类漏掉；而 Wiki
+    点名的 MSPT 大户恰是「红石元件（尤其红石粉）造成海量方块更新/光照更新」。
+    个数必须解码 `section.block_states.data`（4096 个 16³ 方块的位压缩 long 数组；
+    1.16/20w17a 起紧凑无填充、entry 可跨 long 边界，bits = max(4, ceil(log2(palette)))）。
+    """
+    from chunklag import factors
+
+    def pack_padded(indices, bits=4):
+        """MC 实际用的打包：每 long 装 64//bits 个 entry，余位浪费、**entry 不跨 long 边界**。"""
+        per = 64 // bits
+        longs = [0] * ((len(indices) + per - 1) // per)
+        mask = (1 << bits) - 1
+        for i, v in enumerate(indices):
+            li, off = divmod(i, per)
+            longs[li] |= (v & mask) << (off * bits)
+        return [x - (1 << 64) if x >= (1 << 63) else x for x in longs]
+
+    def pack_compact(indices, bits=4):
+        """紧凑跨 long 打包（本项目**不是**这种；保留兼容分支的用例）。"""
+        longs = [0] * ((len(indices) * bits + 63) // 64)
+        mask = (1 << bits) - 1
+        for i, v in enumerate(indices):
+            li, off = divmod(i * bits, 64)
+            longs[li] |= (v & mask) << off
+            if off + bits > 64:
+                longs[li + 1] |= v >> (64 - off)
+        return [x - (1 << 64) if x >= (1 << 63) else x for x in longs]
+
+    def chunk_with(palette_names, data):
+        return {"sections": [{"block_states": {
+            "palette": [{"Name": "minecraft:" + n} for n in palette_names],
+            "data": data,
+        }}]}
+
+    def indices(first_idx, first_n, second_idx=0, second_n=0):
+        seq = [first_idx] * first_n + [second_idx] * second_n
+        return seq + [0] * (4096 - len(seq))
+
+    # 1) 基本计数（bits=4，padded 与 compact 等价）
+    c = factors.count_redstone_blocks(chunk_with(
+        ["stone", "redstone_wire", "repeater"], pack_padded(indices(1, 17, 2, 3))))
+    check("红石粉 17 + 中继器 3 = 20", c == 20, str(c))
+
+    # 2) **回归**：bits=5（palette 30 项）—— 手抖写成"紧凑跨 long"会位错位、虚报成百上千倍。
+    #    实测存档正是这种段（palette=30 → data 342 longs = ceil(4096/12)，padded）。
+    pal30 = ["stone"] * 5 + ["redstone_wire"] + ["stone"] * 24
+    d_padded = pack_padded(indices(5, 1000), 5)
+    check("bits=5 padded：342 longs（与实测一致）", len(d_padded) == 342, str(len(d_padded)))
+    c2 = factors.count_redstone_blocks(chunk_with(pal30, d_padded))
+    check("bits=5 padded 解出 1000 个红石粉（不虚高）", c2 == 1000, str(c2))
+    c2b = factors.count_redstone_blocks(chunk_with(pal30, pack_compact(indices(5, 1000), 5)))
+    check("bits=5 紧凑打包也兼容", c2b == 1000, str(c2b))
+
+    # 3) 健全性检查：位宽/打包判错 → 大量越界索引 → 宁可返回 0 也不虚高
+    bogus = {"sections": [{"block_states": {
+        "palette": [{"Name": "minecraft:stone"}, {"Name": "minecraft:redstone_wire"}],
+        "data": pack_padded(indices(1, 4096), 5),      # palette 只有 2 项却按 bits=5 写
+    }}]}
+    check("位宽判错时返回 0（不虚高）", factors.count_redstone_blocks(bogus) == 0,
+          str(factors.count_redstone_blocks(bogus)))
+
+    # 4) 按钮/压力板按后缀匹配；活塞等方块实体不在这里重复计
+    c3 = factors.count_redstone_blocks(chunk_with(
+        ["stone", "oak_button", "stone_pressure_plate"], pack_padded(indices(1, 5, 2, 2))))
+    check("按钮/压力板按后缀识别 = 7", c3 == 7, str(c3))
+    c4 = factors.count_redstone_blocks(chunk_with(
+        ["stone", "piston", "comparator"], pack_padded(indices(1, 100, 2, 4))))
+    check("活塞不计入（避免与 be_redstone 重复），比较器计 4", c4 == 4, str(c4))
+
+    # 5) 无 data 的段（palette 长度 1）不猜 4096 个
+    no_data = {"sections": [{"block_states": {
+        "palette": [{"Name": "minecraft:redstone_wire"}]}}]}
+    check("无 data 的段不误算成 4096 个", factors.count_redstone_blocks(no_data) == 0, "")
+
+    # 6) analyze_chunk 集成 + 权重档位
+    counts = factors.analyze_chunk(chunk_with(
+        ["stone", "redstone_wire"], pack_padded(indices(1, 64))))
+    check("analyze_chunk 计入 blocks_redstone=64", counts["blocks_redstone"] == 64,
+          str(counts["blocks_redstone"]))
+    w = factors.FACTOR_WEIGHTS
+    check("权重档位：静态容器 < 红石元件 < 漏斗",
+          w["be_container"] < w["blocks_redstone"] < w["be_hopper"],
+          "%s / %s / %s" % (w["be_container"], w["blocks_redstone"], w["be_hopper"]))
+
+
 if __name__ == "__main__":
     build()
     test_nbt()
@@ -566,5 +654,6 @@ if __name__ == "__main__":
     test_mixed_layout_world()
     test_dimension_scoping_and_full_map()
     test_item_stack_counting()
+    test_redstone_block_counting()
     print("\n===== 结果: %d 通过 / %d 失败 =====" % (PASS, FAIL))
     sys.exit(1 if FAIL else 0)
