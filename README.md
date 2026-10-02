@@ -1,7 +1,8 @@
 # MCChunkLag · MC 存档区块卡顿原因分析器
 
 > 读一份 Minecraft **Java 版**存档文件，找出「**哪些区块在拖慢服务器、卡在哪**」。
-> 纯 Python 标准库实现，**零第三方依赖**；纯离线静态分析 —— 不需要运行中的服务端，也不需要装任何 mod。
+> 纯离线静态分析 —— 不需要运行中的服务端，也不需要装任何 mod。
+> **分析引擎与 CLI 零第三方依赖**（纯标准库）；图形界面用 PySide6（Qt 6），见「快速开始」。
 
 思路借鉴 [spark](https://spark.lucko.me/) 的「分组聚合 + 占比 + 下钻 + 排名」：spark 靠**运行时采样**告诉你现在谁在烧 CPU，本项目靠**存档里的静态事实**告诉你哪些区块一被加载就会持续干活。两者互补 —— 存档分析适合「服务器卡但抓不到现场」和「改造前先摸清底数」。
 
@@ -16,19 +17,22 @@
 - **交互式热力图**：Canvas 逐像素渲染，缩放 / 平移 / 悬停下钻看单区块因子明细 / TOP 面板 / 坐标轴与比例尺（对齐游戏 F3 的方块坐标）
 - **常加载区识别**（关键）：出生点恒加载、`/forceload`、FTB `chunks.dat`、成对地狱门装置、末影珍珠加载器、矿车地狱门 —— **不被加载的区块根本不 tick，不产生 MSPT**
 - **新老存档通吃**：1.8 旧布局 → 1.13+ 扁平区块 → 1.16+ 实体分区 → 1.18+/1.20.2 扁平 section → 26.x 新 `dimensions/` 布局，整合包「新旧混存 + 自定义维度」也支持
-- **三个入口**：图形界面（Tkinter）/ 单存档 CLI / 批量扫描
-- **零依赖**：`requirements.txt` 是空的 —— 就是这么用的
+- **三个入口**：图形界面（PySide6）/ 单存档 CLI / 批量扫描
+- **引擎零依赖**：分析、CLI、批量扫描只用标准库；只有图形界面需要 PySide6
 
 ## 快速开始
 
-需要 **Python 3.8+**（开发环境实测 3.13）与 Tkinter（Python 官方安装包自带勾选项，默认已装）。
+需要 **Python 3.8+**（开发环境实测 3.13）。
 
 ```bash
 git clone https://github.com/looking321-rt/MCChunkLag.git
 cd MCChunkLag
 
-# 存一份自己的存档副本再分析（程序只读，不改存档）
+# 只跑 CLI：零依赖，不用装任何东西
 python main.py "C:/Users/you/AppData/Roaming/.minecraft/saves/我的世界" --map out/map.html
+
+# 要用图形界面：装 PySide6（约 100 MB）
+pip install -r requirements.txt
 ```
 
 浏览器打开 `out/map.html` 即为热力图。
@@ -40,11 +44,27 @@ python main.py "C:/Users/you/AppData/Roaming/.minecraft/saves/我的世界" --ma
 双击 `启动界面.bat`（可把存档文件夹直接拖到 bat 上带路径启动），或：
 
 ```bash
+pip install -r requirements.txt     # 首次：装 PySide6
 python chunklag/gui.py [存档目录]
 ```
 
-选存档 → 选维度 → 开始扫描 → 看实时进度 → 结果一览（**点列头排序**、双击用浏览器打开该地图）。
-界面只跑进度与列表，报告仍走 HTML、不在界面内嵌渲染 —— 这是「扫大存档界面也不卡」的关键。
+左右分栏：**左栏**是任务（选存档 → 扫描设置 → 开始/中断 → 进度），**右栏**是结果三视图：
+
+| 视图 | 内容 |
+|---|---|
+| **构成** | 占比树（大类 → 因子 + 占比条），**按加权贡献降序** —— 直接回答「哪种原因占大头」 |
+| **榜单** | 最卡 TOP 区块（评分 + 评分条 + 因子明细），双击用浏览器打开该地图 |
+| **对比** | 多「世界 × 维度」一览（点列头排序、双击打开该行地图） |
+
+其余：统计行 4 张卡（区块数 / **会被 tick 的区块数** / 总卡顿分 / 最卡区块）；状态胶囊实时报进度；
+日志降级为底部一行「最近一条」+〔日志 ▾〕展开抽屉；`▸ 高级` 折叠着模拟距离 / TOP N / 输出目录。
+**报告仍走 HTML、不在界面内嵌渲染** —— 这是「扫大存档界面也不卡」的关键。
+界面跟随系统明暗（不做手动主题开关），色值集中在 `chunklag/ui_tokens.py`，窗口尺寸与上次路径记在 `~/.mcchunklag.json`。
+
+界面预览（`python tests/ui_shots.py` 一键重出，离屏渲染；图里路径是演示用的假路径）：
+
+![构成视图 · 亮色](tests/ui_preview/compose_light.png)
+![对比视图 · 暗色](tests/ui_preview/compare_dark.png)
 
 ### 2. 单存档 CLI
 
@@ -155,7 +175,8 @@ chunklag/
   mapview.py    HTML 交互地图渲染
   report.py     终端 + HTML 报告
   scanjob.py    扫描引擎（可中断 + 进度回调，GUI 与 CLI 共用）
-  gui.py        Tkinter 界面
+  ui_tokens.py  Qt 设计令牌（15 个颜色角色 = 全项目唯一色值定义处 + QSS）
+  gui.py        PySide6 界面（选存档 → 扫描 → 构成 / 榜单 / 对比三视图）
 main.py         单存档 CLI
 scan.py         批量扫描 CLI
 tests/          自测 + 合成测试存档生成器 + 诊断工具
@@ -164,11 +185,13 @@ tests/          自测 + 合成测试存档生成器 + 诊断工具
 ## 开发与自测
 
 ```bash
-python tests/test_pipeline.py    # 解析链路 / 因子分类 / 报告渲染
-python tests/test_scanjob.py     # 扫描引擎（进度 / 中断 / 输出结构）+ GUI 端到端
+python tests/test_pipeline.py    # 解析链路 / 因子分类 / 报告渲染（196 项）
+python tests/test_scanjob.py     # 扫描引擎（进度 / 中断 / 输出结构）+ 界面（137 项，离屏跑不弹窗）
+python tests/ui_shots.py         # 界面预览图 11 张 + 硬指标断言 13 项（tests/ui_preview/）
 ```
 
 测试用合成存档（`tests/make_fixture.py` 现场生成，不入库），覆盖新版布局、门判据、珍珠、矿车、混存布局等易回退点。
+界面测试与预览图都跑**离屏平台**（`QT_QPA_PLATFORM=offscreen`）：无需桌面会话、也不会弹真窗口。
 
 诊断工具（排查真实存档用）：
 
