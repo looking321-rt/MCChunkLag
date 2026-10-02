@@ -186,6 +186,10 @@ def render_map_for(world_dir, res, out_path, simdist=10, player=None, top_n=10,
 
     data = mapdata_mod.build_union_map(res, player_here, simdist, regions,
                                        top_n=top_n, union_only=scoped)
+    # 「会被 tick 的区块数」留一份在 res 上供界面统计用：加载判定（常加载区 ×2 / 玩家模拟区 ×1 /
+    # 其余 ×0）只在这里算过一次，外面重算等于重复劳动。挂字段而不改本函数的返回值/签名，
+    # CLI 与既有调用（有 print 返回值的用法）零影响。
+    res.loaded_chunks = data["loaded"]
     if player_here:
         scope = "玩家模拟区∪常加载区" if scoped else "全量"
         msg = ("%s地图: 区块 %d | 玩家区块(%d,%d) 模拟距离%d → 加载区%d×%d | 常加载区: %s%s"

@@ -149,6 +149,13 @@ class WorldResult:
     top: str = "-"
     seconds: float = 0.0
     skipped: str = ""
+    # ---- 界面「构成 / 榜单」视图的数据（2026-10-02 Qt 界面落地时补）----
+    # 背景：_finish_one 本来就握着完整 AnalysisResult，但只把 top_chunks[0] 拼成字符串
+    # 带走、其余全丢 → 界面没法回答"哪种原因占大头"，用户只能去开 HTML 报告。
+    # 排序口径：组间与组内**都按加权贡献降序**（消费方是界面，答案要落在第一行）。
+    factors: list = field(default_factory=list)    # [(组名, 因子label, count, weight, contribution)]
+    top_rows: list = field(default_factory=list)   # [(cx, cz, score, counts)] 评分降序
+    ticked: int = 0                                # 会被 tick 的区块数（地图加载判定口径）
 
     @property
     def map_path(self):
@@ -415,10 +422,37 @@ class ScanJob:
                 f.write(report.render_text(res, top_n=self.opts.top))
         wr = WorldResult(name=item.name, dim=dim_name, out_dir=out_dir,
                          chunks=res.total_chunks, score=res.total_score,
-                         top=top_txt, seconds=base_seconds + (time.time() - t0))
+                         top=top_txt, seconds=base_seconds + (time.time() - t0),
+                         factors=_factor_rows(res),
+                         top_rows=list(res.top_chunks[:self.opts.top]),
+                         ticked=getattr(res, "loaded_chunks", 0))
         self._log("   → %s（%.1fs）" % (out_dir, wr.seconds))
         self._emit({"kind": "world_done", "result": wr, "world_i": world_i, "world_n": world_n})
         return wr
+
+
+def _factor_rows(res):
+    """
+    把 AnalysisResult 的因子聚合摊平成 `[(组名, label, count, weight, contribution)]`。
+
+    顺序 = **组块连续**：组间按组贡献降序、组内按因子贡献降序。界面靠"组名变了就插组头行"
+    渲染占比树，所以不能把全体行按贡献混排（否则同组因子会被别的组打断）。
+    只收 count > 0 的因子（与报告口径一致，界面上不出现 0 行）。
+    """
+    groups = []
+    for group_name, stats in res.groups:
+        items = [(st.label, st.count, st.weight, st.contribution)
+                 for st in stats if st.count > 0]
+        if not items:
+            continue
+        items.sort(key=lambda it: -it[3])
+        groups.append((group_name, sum(it[3] for it in items), items))
+    groups.sort(key=lambda g: -g[1])
+    rows = []
+    for group_name, _group_total, items in groups:
+        for label, count, weight, contrib in items:
+            rows.append((group_name, label, count, weight, contrib))
+    return rows
 
 
 def _eta(done, total, elapsed):

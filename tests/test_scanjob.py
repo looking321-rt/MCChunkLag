@@ -10,6 +10,9 @@ import shutil
 import sys
 import time
 
+# GUI 测试用离屏平台：无需桌面会话、也不弹真窗口（真机跑测试不会闪窗）
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
@@ -313,36 +316,6 @@ def test_errors_and_edge_cases():
         check("目录里没有存档 → ScanError", "没有找到存档" in raised2, raised2)
 
 
-class _MsgBoxStub:
-    """
-    替掉 tkinter.messagebox：测试里弹出的模态框**没人点确定**，会把进程永久挂住
-    （实测：一次跑挂 240s、一次退出码 1）。真机上是人来点，测试里必须换成记录器。
-    """
-
-    def __init__(self):
-        self.calls = []
-
-    def _rec(self, kind, *args, **_kw):
-        self.calls.append((kind, args[0] if args else ""))
-        return True
-
-    def showinfo(self, *a, **k):
-        return self._rec("info", *a, **k)
-
-    def showwarning(self, *a, **k):
-        return self._rec("warning", *a, **k)
-
-    def showerror(self, *a, **k):
-        return self._rec("error", *a, **k)
-
-    def askyesno(self, *a, **k):
-        return self._rec("askyesno", *a, **k)
-
-    @property
-    def errors(self):
-        return [c for c in self.calls if c[0] == "error"]
-
-
 def test_finish_one_includes_scan_time():
     """
     结果里的「耗时」必须含**世界扫描时间**，不能只算渲染。
@@ -383,63 +356,154 @@ def test_gui_helpers():
               all(a["mtime"] >= b["mtime"] for a, b in zip(found, found[1:])), "")
 
 
+class _DialogStub:
+    """
+    替掉 gui.dialogs：测试里弹出的模态框**没人点确定**，会把进程永久挂住
+    （Tk 版实测：一次跑挂 240s、一次退出码 1 且无 traceback）。真机上是人来点，
+    测试里必须换成记录器。
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def _rec(self, kind, title, text=""):
+        self.calls.append((kind, title))
+        return True
+
+    def info(self, title, text):
+        return self._rec("info", title, text)
+
+    def warn(self, title, text):
+        return self._rec("warning", title, text)
+
+    def error(self, title, text):
+        return self._rec("error", title, text)
+
+    def ask(self, title, text):
+        return self._rec("ask", title, text)
+
+    @property
+    def errors(self):
+        return [c for c in self.calls if c[0] == "error"]
+
+
+_APP = None
+
+
+def qt_app():
+    """离屏 QApplication（单例）。没有 PySide6 时返回 None，用例记 SKIP。"""
+    global _APP
+    if _APP is not None:
+        return _APP
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return None
+    from chunklag import ui_tokens
+    _APP = QApplication.instance() or QApplication(["mcchunklag-selftest"])
+    ui_tokens.apply(_APP)
+    return _APP
+
+
+def _drive(app, win, timeout=90):
+    """
+    驱动扫描（测试里不用真事件循环）：排空队列 + 处理 Qt 事件，直到工作线程结束。
+
+    真机靠 QTimer 每 100ms 调 `_pump`；测试直接调，避免依赖定时器精度。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        win._pump()
+        if win.worker is None:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _stat_value(card_widget):
+    return card_widget.layout().itemAt(0).widget().text()
+
+
+def _stat_label(card_widget):
+    return card_widget.layout().itemAt(1).widget().text()
+
+
+def _table_names(table):
+    """对比表第 0 列的行文本（同世界多维度时后续行为空）。"""
+    return [table.item(r, 0).text() for r in range(table.rowCount())]
+
+
+def _select_row(win, row):
+    """
+    模拟用户点选一行。
+
+    ⚠️ 不能用 `QTableWidget.selectRow()`：它在离屏/未显示窗口下不发效
+    （实测 hasSelection 恒 False），而 Qt 内部真实点击走的就是 selectionModel。
+    """
+    from PySide6.QtCore import QItemSelectionModel
+    t = win.cmp_table
+    t.selectionModel().select(t.model().index(row, 0),
+                              QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+
+
 def test_gui_smoke():
-    """创建真实窗口跑一遍（无桌面会话时会失败 → 记 SKIP，不算失败）。"""
-    try:
-        import tkinter as tk
-    except ImportError as exc:
-        skip("GUI 冒烟", "没有 tkinter：%s" % exc)
-        return
-    try:
-        root = tk.Tk()
-    except Exception as exc:
-        skip("GUI 冒烟", "无法创建窗口：%s" % exc)
+    """创建真实窗口跑一遍（离屏平台，无需桌面会话）。"""
+    app = qt_app()
+    if app is None:
+        skip("GUI 冒烟", "没有 PySide6")
         return
 
     from chunklag import gui
     old_cfg = gui.CONFIG_PATH
-    old_mb = gui.messagebox
-    stub = _MsgBoxStub()
+    old_dlg = gui.dialogs
+    stub = _DialogStub()
     with TempDir("gui") as tmp:
         gui.CONFIG_PATH = os.path.join(tmp, "cfg.json")
-        gui.messagebox = stub
+        gui.dialogs = stub
         try:
-            root.withdraw()
-            win = gui.ScanGui(root, initial_path=FAKE_WORLD)
-            root.update()
-            check("窗口建起来了", win.ent_path.get() == FAKE_WORLD, win.ent_path.get())
-            check("维度下拉给了 4 个选项",
-                  win.cmb_dim["values"] and len(win.cmb_dim["values"]) == 4,
-                  str(win.cmb_dim["values"]))
-            check("中断按钮初始不可用", str(win.btn_cancel["state"]) == "disabled", "")
+            win = gui.ScanGui(initial_path=FAKE_WORLD)
+            check("窗口建起来了", win.ent_path.text() == FAKE_WORLD, win.ent_path.text())
+            check("窗口尺寸 1180x760（需求规格）",
+                  (win.width(), win.height()) == (1180, 760), str((win.width(), win.height())))
+            check("最小尺寸 1000x660（需求规格）",
+                  (win.minimumWidth(), win.minimumHeight()) == (1000, 660), "")
+            check("维度下拉给了 4 个选项", win.cmb_dim.count() == 4, str(win.cmb_dim.count()))
+            check("中断按钮初始不可用", not win.btn_cancel.isEnabled(), "")
+            check("状态胶囊初始为「就绪」", win.pill.text() == "就绪", win.pill.text())
             win._log_line("冒烟测试")
             win._on_found({"kind": "found", "roots": [tmp],
                            "worlds": [{"name": "W1", "dir": FAKE_WORLD,
                                        "version": "1.20.1", "mtime": 1.0}]})
-            check("发现存档后自动填入路径", win.ent_path.get() == FAKE_WORLD, win.ent_path.get())
-            check("发现列表生成下拉项", len(win.cmb_found["values"]) == 1,
-                  str(win.cmb_found["values"]))
+            check("发现存档后自动填入路径", win.ent_path.text() == FAKE_WORLD, win.ent_path.text())
+            check("发现列表生成下拉项", win.cmb_found.count() == 1, str(win.cmb_found.count()))
             win._on_found({"kind": "found", "roots": [tmp], "worlds": []})
-            check("没找到存档时给提示且不崩", "没找到" in win.var_state.get(), win.var_state.get())
+            check("没找到存档时给提示且不崩", "没找到" in win.lb_detail.text(), win.lb_detail.text())
             win._on_progress({"kind": "progress", "world": "W", "world_i": 1, "world_n": 2,
                               "dim": "主世界", "file": "r.0.0.mca", "chunks": 1024,
                               "percent": 12.5, "elapsed": 3.0, "eta": 21.0, "done": 1, "total": 8})
-            check("进度条跟着进度事件走", abs(win.bar["value"] - 12.5) < 1e-6, str(win.bar["value"]))
-            check("明细行显示世界/维度/文件", "r.0.0.mca" in win.var_detail.get(),
-                  win.var_detail.get())
+            check("进度条跟着进度事件走", abs(win.bar.value() / 10.0 - 12.5) < 1e-6,
+                  str(win.bar.value()))
+            check("状态胶囊显示百分比", win.pill.text() == "扫描中 12%", win.pill.text())
+            check("明细行显示世界/维度/文件", "r.0.0.mca" in win.lb_detail.text(),
+                  win.lb_detail.text())
+            check("明细行带预计剩余", "剩约 21 秒" in win.lb_detail.text(), win.lb_detail.text())
+            win.chk_auto.setChecked(False)
             win._add_result(scanjob.WorldResult(name="W", dim="主世界", out_dir=tmp,
                                                 chunks=3, score=7, top="(0,0)=7", seconds=1.2))
             win._add_result(scanjob.WorldResult(name="坏", skipped="跳过：没有 region 区块数据"))
-            check("结果表插入两行", len(win.tree.get_children()) == 2, "")
+            check("对比表插入两行", win.cmp_table.rowCount() == 2, str(win.cmp_table.rowCount()))
             win._on_done({"kind": "done", "text": "汇总", "cancelled": False,
                           "results": win.results, "out": tmp})
-            check("完成后按钮恢复可用", str(win.btn_start["state"]) == "normal", "")
+            check("完成后按钮恢复可用", win.btn_start.isEnabled(), "")
+            check("完成后状态胶囊报完成", "完成" in win.pill.text(), win.pill.text())
             win._set_running(True)
-            check("扫描中开始按钮禁用", str(win.btn_start["state"]) == "disabled", "")
-            check("扫描中中断按钮可用", str(win.btn_cancel["state"]) == "normal", "")
+            check("扫描中开始按钮禁用", not win.btn_start.isEnabled(), "")
+            check("扫描中中断按钮可用", win.btn_cancel.isEnabled(), "")
             win._set_running(False)
             win._save_cfg()
             check("配置写下来了", os.path.exists(gui.CONFIG_PATH), gui.CONFIG_PATH)
+            check("配置里有窗口尺寸", bool(gui.load_config().get("geometry")), "")
             for i in range(7):                    # 常用位置：去重 + 上限 5
                 win._remember_root(os.path.join(tmp, "root%d" % i))
             roots = list(win.cfg["scan_roots"])
@@ -450,11 +514,153 @@ def test_gui_smoke():
                   len(win.cfg["scan_roots"]) == 5 and win.cfg["scan_roots"][0] == roots[2]
                   and win.cfg["scan_roots"].count(roots[2]) == 1, str(win.cfg["scan_roots"]))
             check("全程没弹错误框", not stub.errors, str(stub.errors))
-            win._stop_pump()          # 关窗前停定时器（与真机 _on_close 一致）
-            root.destroy()
+            win.close()
         finally:
             gui.CONFIG_PATH = old_cfg
-            gui.messagebox = old_mb
+            gui.dialogs = old_dlg
+
+
+def test_gui_views():
+    """
+    三视图与空态（本版界面的灵魂所在）。
+
+    钉住三件事：①空态真的显示且统计行不占位；②「构成」按贡献降序、最大项落在首行
+    （用户的问题是"哪种原因占大头"）；③「榜单」只收有卡顿因子的区块、行数与 TOP 明细一致。
+    """
+    app = qt_app()
+    if app is None:
+        skip("GUI 视图", "没有 PySide6")
+        return
+
+    from chunklag import gui
+    old_cfg = gui.CONFIG_PATH
+    old_dlg = gui.dialogs
+    with TempDir("gui_views") as tmp:
+        gui.CONFIG_PATH = os.path.join(tmp, "cfg.json")
+        gui.dialogs = _DialogStub()
+        try:
+            win = gui.ScanGui()
+            check("空态：统计行隐藏", win.stat_row.isHidden(), "")
+            check("空态：内容区停在空态页", win.stack.currentIndex() == 0,
+                  str(win.stack.currentIndex()))
+            check("空态：三个分段按钮禁用",
+                  all(not b.isEnabled() for b in win.seg_buttons.values()), "")
+            check("空态：底部提示「开始扫描」", "开始扫描" in win.lb_lastlog.text(),
+                  win.lb_lastlog.text())
+
+            # 形状与量级取自项目实测（生存001：3762 区块 / 441 会被 tick）
+            factors = [
+                ("方块实体(block_entities)", "漏斗(每tick扫)", 1204, 600, 722400),
+                ("方块实体(block_entities)", "刷怪笼", 312, 500, 156000),
+                ("实体(entities)", "敌对怪物", 486, 300, 145800),
+            ]
+            top_rows = [(118, -92, 42800, {"be_hopper": 62}),
+                        (64, 128, 31200, {"be_hopper": 48})]
+            wr = scanjob.WorldResult(name="生存001", dim="主世界", out_dir=tmp,
+                                     chunks=3762, score=1024200, top="(118,-92)=42800",
+                                     seconds=48.2, factors=factors, top_rows=top_rows,
+                                     ticked=441)
+            win._add_result(wr)
+
+            check("有结果后统计行显示", not win.stat_row.isHidden(), "")
+            check("统计卡：区块数", _stat_value(win.stat_chunks) == "3,762",
+                  _stat_value(win.stat_chunks))
+            check("统计卡：会被 tick 的绝对值", _stat_value(win.stat_ticked) == "441",
+                  _stat_value(win.stat_ticked))
+            check("统计卡：会被 tick 带百分比", "12%" in _stat_label(win.stat_ticked),
+                  _stat_label(win.stat_ticked))
+            check("统计卡：总卡顿分", _stat_value(win.stat_score) == "1,024,200",
+                  _stat_value(win.stat_score))
+            check("统计卡：最卡区块只给坐标（分数不混用同一标签）",
+                  _stat_value(win.stat_top) == "(118,-92)", _stat_value(win.stat_top))
+            check("有结果后分段按钮可用",
+                  all(b.isEnabled() for b in win.seg_buttons.values()), "")
+
+            # 构成视图：首行是组头，且是贡献最大的那个组
+            first = win.compose_table.item(0, 0).text()
+            check("构成视图首行是最大贡献组", first.startswith("方块实体"), first)
+            check("构成视图行数 = 组头 + 因子行", win.compose_table.rowCount() == 5,
+                  str(win.compose_table.rowCount()))
+            pcts = []
+            for r in range(1, win.compose_table.rowCount()):
+                holder = win.compose_table.cellWidget(r, 4)
+                if holder is not None:
+                    pcts.append(holder.layout().itemAt(1).widget().text())
+            check("构成视图每行带占比", len(pcts) == 3, str(pcts))
+            check("构成视图占比按降序", float(pcts[0].rstrip("%")) >
+                  float(pcts[-1].rstrip("%")), str(pcts))
+
+            win._show_view("rank")
+            check("切到榜单视图", win.stack.currentIndex() == 2, str(win.stack.currentIndex()))
+            check("榜单行数 = TOP 明细数", win.rank_table.rowCount() == 2,
+                  str(win.rank_table.rowCount()))
+            check("榜单第一行是评分最高的区块",
+                  win.rank_table.item(0, 2).text() == "42,800", win.rank_table.item(0, 2).text())
+            check("榜单带因子明细（key 映射成中文名）",
+                  "漏斗(每tick扫) ×62" in win.rank_table.item(0, 4).text(),
+                  win.rank_table.item(0, 4).text())
+
+            win._show_view("compare")
+            check("切到对比视图", win.stack.currentIndex() == 3, str(win.stack.currentIndex()))
+
+            win._open_focus_map()          # 地图不存在 → info（不能是 error）
+            check("打开不存在的地图走 info 而非 error",
+                  [c[0] for c in gui.dialogs.calls] == ["info"],
+                  str(gui.dialogs.calls))
+            win.close()
+        finally:
+            gui.CONFIG_PATH = old_cfg
+            gui.dialogs = old_dlg
+
+
+def test_worldresult_carries_analysis():
+    """
+    界面「构成 / 榜单」的数据来源：WorldResult 必须把因子聚合与 TOP 明细带出来。
+
+    背景（2026-10-02 Qt 界面落地）：早先 `_finish_one` 只取 `top_chunks[0]` 拼成字符串、
+    丢掉整个 AnalysisResult，界面因此做不出"哪种原因占大头"（只能去开 HTML 报告）。
+    """
+    import main as main_mod
+    from chunklag.scanjob import _PlanItem
+    with TempDir("carry") as tmp:
+        res = main_mod.analyze_world(FAKE_WORLD, "0")[0][2]
+        job = ScanJob(ScanOptions(path=FAKE_WORLD, out=os.path.join(tmp, "out"),
+                                  dim="0", top=5))
+        item = _PlanItem(world_dir=FAKE_WORLD, name="测试世界")
+        wr = job._finish_one(item, 1, 1, "主世界", res)
+
+        check("渲染时把加载判定结果挂回 res（ticked 的来源）",
+              hasattr(res, "loaded_chunks"), "")
+        check("ticked 取自地图加载判定", wr.ticked == getattr(res, "loaded_chunks", -1),
+              "%s vs %s" % (wr.ticked, getattr(res, "loaded_chunks", None)))
+        check("ticked 不超过区块总数", 0 <= wr.ticked <= wr.chunks,
+              "%s/%s" % (wr.ticked, wr.chunks))
+        check("WorldResult 带出因子聚合", bool(wr.factors), str(len(wr.factors)))
+        check("因子行是 (组,label,count,weight,贡献) 五元组",
+              all(len(x) == 5 for x in wr.factors), str(wr.factors[:1]))
+        check("因子行只收 count>0", all(x[2] > 0 for x in wr.factors), str(wr.factors[:1]))
+
+        # 组块连续：组间按组总贡献降序、组内按因子贡献降序（界面靠"组名变了"插组头行）
+        order, blocks = [], []
+        for g, _l, _c, _w, contrib in wr.factors:
+            if g != (order[-1][0] if order else None):
+                order.append((g, contrib))
+                blocks.append((g, [contrib]))
+            else:
+                order[-1] = (g, order[-1][1] + contrib)
+                blocks[-1][1].append(contrib)
+        totals = [t for _g, t in order]
+        check("组间按组贡献降序", totals == sorted(totals, reverse=True), str(totals))
+        check("组内按因子贡献降序",
+              all(block == sorted(block, reverse=True) for _g, block in blocks), str(blocks))
+        check("组块连续（同组因子不被别的组打断）",
+              len(set(g for g, _t in order)) == len(order), str([g for g, _t in order]))
+
+        check("带出 TOP 明细", len(wr.top_rows) <= 5 and all(len(t) == 4 for t in wr.top_rows),
+              str(len(wr.top_rows)))
+        scores = [t[2] for t in wr.top_rows]
+        check("TOP 明细按评分降序", scores == sorted(scores, reverse=True), str(scores))
+        check("TOP 明细不含 0 分区块（0 分不是最卡）", all(s > 0 for s in scores), str(scores))
 
 
 def test_gui_end_to_end():
@@ -463,56 +669,45 @@ def test_gui_end_to_end():
 
     冒烟测试只喂假事件，这条才能抓到"线程 / 队列 / 状态流转"这类真问题。
     """
-    try:
-        import tkinter as tk
-    except ImportError as exc:
-        skip("GUI 端到端", "没有 tkinter：%s" % exc)
-        return
-    try:
-        root = tk.Tk()
-    except Exception as exc:
-        skip("GUI 端到端", "无法创建窗口：%s" % exc)
+    app = qt_app()
+    if app is None:
+        skip("GUI 端到端", "没有 PySide6")
         return
 
     from chunklag import gui
     old_cfg = gui.CONFIG_PATH
-    old_mb = gui.messagebox
-    stub = _MsgBoxStub()
+    old_dlg = gui.dialogs
+    stub = _DialogStub()
     with TempDir("gui_e2e") as tmp:
         gui.CONFIG_PATH = os.path.join(tmp, "cfg.json")
-        gui.messagebox = stub
+        gui.dialogs = stub
         try:
             saves = make_saves(tmp)
             out = os.path.join(tmp, "out")
-            root.withdraw()
-            win = gui.ScanGui(root, initial_path=saves)
-            win.var_out.set(out)
-            win.var_auto.set(False)          # 别真去开浏览器
-            win.var_dim.set("主世界")
-            win._start()
-            check("点开始后进入运行态", str(win.btn_start["state"]) == "disabled", "")
+            win = gui.ScanGui(initial_path=saves)
+            win.ent_out.setText(out)
+            win.chk_auto.setChecked(False)          # 别真去开浏览器
+            win.cmb_dim.setCurrentText("主世界")
+            win._start_scan()
+            check("点开始后进入运行态", not win.btn_start.isEnabled(), "")
 
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                root.update()               # 让 Tk 跑 after 回调（_pump 在里头）
-                if win.worker is None and win.results:
-                    break
-                time.sleep(0.02)
-
+            check("端到端在 90s 内跑完", _drive(app, win), "超时")
             check("后台线程跑完并回收", win.worker is None, "仍在跑（超时）")
             ok = [r for r in win.results if not r.skipped]
-            check("结果表行数 == 结果数", len(win.tree.get_children()) == len(win.results),
-                  "%d vs %d" % (len(win.tree.get_children()), len(win.results)))
+            check("对比表行数 == 结果数", win.cmp_table.rowCount() == len(win.results),
+                  "%d vs %d" % (win.cmp_table.rowCount(), len(win.results)))
             check("至少一项扫出结果", len(ok) >= 1, str([(r.name, r.dim) for r in win.results]))
             check("地图文件真的生成了", all(os.path.exists(r.map_path) for r in ok),
                   str([r.map_path for r in ok]))
-            check("状态栏显示完成", "完成" in win.var_state.get(), win.var_state.get())
+            check("状态胶囊显示完成", "完成" in win.pill.text(), win.pill.text())
             check("结果目录含维度子层",
                   all(os.path.basename(os.path.dirname(r.map_path)) in ("主世界", "下界")
                       for r in ok), str([r.out_dir for r in ok]))
-            check("日志里有汇总表头", "世界 | 维度" in win.log.get("1.0", "end"), "")
-            check("按钮回到可用态", str(win.btn_start["state"]) == "normal", "")
+            check("日志里有汇总表头", "世界 | 维度" in win.log.toPlainText(), "")
+            check("按钮回到可用态", win.btn_start.isEnabled(), "")
             check("端到端没弹错误框", not stub.errors, str(stub.errors))
+            check("结果带出了因子聚合（构成视图有数据）",
+                  all(r.factors for r in ok), str([len(r.factors) for r in ok]))
 
             win._remember_root(saves)
             win._save_cfg()
@@ -523,15 +718,18 @@ def test_gui_end_to_end():
             # 跳过项不能炸（没有 map.html 时给提示而不是崩）
             skip_rows = [r for r in win.results if r.skipped]
             if skip_rows:
-                idx = win.results.index(skip_rows[0])
-                win.tree.selection_set(win.tree.get_children()[idx])
+                row = [i for i in range(win.cmp_table.rowCount())
+                       if win.cmp_table.item(i, 1).text().startswith("●")]
+                _select_row(win, row[0])
                 check("跳过项的 map_path 为空", skip_rows[0].map_path == "", "")
-                win._open_selected_map()     # 走一遍真实分支（对话框已被替身接住）
+                win._open_focus_map()        # 走一遍真实分支（对话框已被替身接住）
                 check("跳过项提示走的是 info 而非错误", not stub.errors, str(stub.errors))
+                check("跳过行有 danger 状态点 + 文字（不只靠颜色）",
+                      win.cmp_table.item(row[0], 1).text() == "● 跳过", "")
 
-            # ---- 结果表排序（用可控数据，避免依赖真实扫描的分数分布）----
+            # ---- 对比表排序（用可控数据，避免依赖真实扫描的分数分布）----
             win.results = []
-            win.tree.delete(*win.tree.get_children())
+            win.focus = None
             mk = scanjob.WorldResult
             win._add_result(mk(name="甲", dim="主世界", chunks=100, score=5,
                                top="(0,0)=5", seconds=1.0))
@@ -541,46 +739,42 @@ def test_gui_end_to_end():
             win._add_result(mk(name="丁", dim="下界", chunks=500, score=42,
                                top="(2,2)=42", seconds=4.0))
 
-            win._sort_by("score")
-            check("点「总卡顿分」列 → 降序",
-                  [r.name for r in win.results] == ["乙", "丁", "甲", "丙"],
-                  str([r.name for r in win.results]))
-            check("被跳过的世界恒排最后", win.results[-1].skipped, "")
-            rows = [win.tree.item(i, "values")[0] for i in win.tree.get_children()]
-            check("表格行序与结果序一致", rows == ["乙", "丁", "甲", "丙"], str(rows))
-            check("表头标出排序方向", "▼" in win.tree.heading("score", "text"),
-                  win.tree.heading("score", "text"))
+            win._sort_by(3)                   # 第 3 列 = 总卡顿分
+            check("点「总卡顿分」列 → 降序", _table_names(win.cmp_table) == ["乙", "丁", "甲", "丙"],
+                  str(_table_names(win.cmp_table)))
+            check("被跳过的世界恒排最后",
+                  win.cmp_table.rowCount() == 4
+                  and win.cmp_table.item(3, 1).text() == "● 跳过", "")
+            check("表头标出排序方向", "▼" in win.cmp_table.horizontalHeaderItem(3).text(),
+                  win.cmp_table.horizontalHeaderItem(3).text())
 
-            win._sort_by("score")
+            win._sort_by(3)
             check("同列再点一次 → 反向（升序）",
-                  [r.name for r in win.results] == ["甲", "丁", "乙", "丙"],
-                  str([r.name for r in win.results]))
+                  _table_names(win.cmp_table) == ["甲", "丁", "乙", "丙"],
+                  str(_table_names(win.cmp_table)))
 
-            win._sort_by("world")
-            names = [r.name for r in win.results if not r.skipped]
+            win._sort_by(0)                   # 世界列（文本）
+            names = [n for n in _table_names(win.cmp_table)[:3]]
             check("文本列默认升序", names == sorted(names), str(names))
 
             # 排序换位置时不能丢选中（"选中项要咬住"）
-            iid = win.tree.get_children()[2]
-            picked = win.tree.item(iid, "values")[0]
-            win.tree.selection_set(iid)
-            win._sort_by("chunks")
-            sel = win.tree.selection()
+            _select_row(win, 2)
+            picked = win.cmp_table.item(2, 0).text()
+            check("点选一行后聚焦跟着走", win.focus is not None and win.focus.name == picked,
+                  "%s vs %s" % (picked, win.focus.name if win.focus else None))
+            win._sort_by(2)                   # 区块数列
+            sel = win.cmp_table.selectedIndexes()
             check("排序后选中项仍咬住同一行",
-                  bool(sel) and win.tree.item(sel[0], "values")[0] == picked,
-                  "%s → %s" % (picked, win.tree.item(sel[0], "values")[0] if sel else "无"))
+                  bool(sel) and win.cmp_table.item(sel[0].row(), 0).text() == picked,
+                  "%s → %s" % (picked,
+                               win.cmp_table.item(sel[0].row(), 0).text() if sel else "无"))
 
             # ---- 第二轮：全部维度（同一世界要出多个维度的行 + 各自 map.html）----
-            win.var_dim.set("全部维度")
-            win._start()
-            check("第二轮开始：结果表被清空复位", len(win.tree.get_children()) == 0,
-                  str(len(win.tree.get_children())))
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                root.update()
-                if win.worker is None and win.results:
-                    break
-                time.sleep(0.02)
+            win.cmb_dim.setCurrentText("全部维度")
+            win._start_scan()
+            check("第二轮开始：对比表被清空复位", win.cmp_table.rowCount() == 0,
+                  str(win.cmp_table.rowCount()))
+            check("第二轮也跑完了", _drive(app, win), "超时")
             ok2 = [r for r in win.results if not r.skipped]
             dims = {r.dim for r in ok2}
             check("全部维度：主世界与下界都出了结果", dims == {"主世界", "下界"}, str(dims))
@@ -589,13 +783,12 @@ def test_gui_end_to_end():
                   and all(os.path.exists(r.map_path) for r in ok2),
                   str([(r.dim, r.out_dir) for r in ok2]))
             check("第二轮也没弹错误框", not stub.errors, str(stub.errors))
-
-            win._stop_pump()
-            root.update()
-            root.destroy()
+            check("多维度结果都能切换聚焦（构成视图跟着走）",
+                  all(h.factors for h in ok2) and win.focus in ok2 + [None], "")
+            win.close()
         finally:
             gui.CONFIG_PATH = old_cfg
-            gui.messagebox = old_mb
+            gui.dialogs = old_dlg
 
 
 if __name__ == "__main__":
@@ -609,6 +802,8 @@ if __name__ == "__main__":
     test_finish_one_includes_scan_time()
     test_gui_helpers()
     test_gui_smoke()
+    test_gui_views()
+    test_worldresult_carries_analysis()
     test_gui_end_to_end()
     print("\n===== 结果: %d 通过 / %d 失败 / %d 跳过 =====" % (PASS, FAIL, SKIP))
     sys.exit(1 if FAIL else 0)

@@ -24,6 +24,10 @@ output/
 tests/_tmp_scan/
 tests/dim_out/
 
+# 界面预览图脚本的临时产物（ui_shots.py；预览图 tests/ui_preview/ 本身入库）
+tests/_shots_out/
+tests/_shots_cfg.json
+
 # 编辑器/系统
 .DS_Store
 Thumbs.db
